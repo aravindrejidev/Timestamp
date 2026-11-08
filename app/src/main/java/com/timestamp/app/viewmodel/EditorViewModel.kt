@@ -17,6 +17,12 @@ import com.timestamp.app.data.LyricsJson
 import com.timestamp.app.data.ProjectEntity
 import com.timestamp.app.data.SyncMode
 import com.timestamp.app.data.WordTiming
+import com.timestamp.app.format.ExportFormat
+import com.timestamp.app.format.LyricsExporter
+import com.timestamp.app.format.PreviewParser
+import com.timestamp.app.format.PreviewReport
+import com.timestamp.app.format.TtmlStyle
+import com.timestamp.app.format.buildReport
 import com.timestamp.app.format.distributeWords
 import com.timestamp.app.format.effectiveEnd
 import com.timestamp.app.format.splitWords
@@ -41,6 +47,14 @@ data class EditorMeta(
     val ttmlFontSize: Int,
     val ttmlColor: String,
     val ttmlPosition: String
+)
+
+/** A parsed export (or saved file) shown on the Preview screen. */
+data class PreviewData(
+    val label: String,
+    val format: String,
+    val lines: List<LyricLine>,
+    val report: PreviewReport
 )
 
 @OptIn(FlowPreview::class)
@@ -76,6 +90,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     val playerError: StateFlow<String?> = _error.asStateFlow()
     private val _estimateWords = MutableStateFlow(true)
     val estimateWords: StateFlow<Boolean> = _estimateWords.asStateFlow()
+
+    private val _preview = MutableStateFlow<PreviewData?>(null)
+    val preview: StateFlow<PreviewData?> = _preview.asStateFlow()
 
     private val undo = kotlin.collections.ArrayDeque<List<LyricLine>>()
     private var nextId = 0L
@@ -467,16 +484,61 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (deltaMs == 0L) ls else ls.map { if (it.startMs >= 0) it.shifted(deltaMs) else it }
     }
 
-    /** Fills in word timings for synced lines that were only line-synced. */
-    fun estimateWordTimings() = mutate { ls ->
-        ls.mapIndexed { i, l ->
-            val done = l.words.isNotEmpty() && l.words.all { it.startMs >= 0 }
-            if (l.startMs < 0 || done) l
-            else {
-                val end = effectiveEnd(ls, i)
-                l.copy(words = distributeWords(l.text, l.startMs, end), endMs = end)
+    /** Fills in word timings for synced lines that were only line-synced. Returns how many lines changed. */
+    fun estimateWordTimings(): Int {
+        var n = 0
+        mutate { ls ->
+            ls.mapIndexed { i, l ->
+                val done = l.words.isNotEmpty() && l.words.all { it.startMs >= 0 }
+                if (l.startMs < 0 || done) {
+                    l
+                } else {
+                    n++
+                    val end = effectiveEnd(ls, i)
+                    l.copy(words = distributeWords(l.text, l.startMs, end), endMs = end)
+                }
             }
         }
+        return n
+    }
+
+    // ---------------------------------------------------------------- preview / verify
+
+    /**
+     * Parses [text] exactly like a player would read the file, so what you see is what the file contains.
+     */
+    fun setPreview(text: String, label: String) {
+        val parsed = PreviewParser.parse(text)
+        val dur = if (_duration.value > 0) _duration.value else (_meta.value?.durationMs ?: 0L)
+        val report = buildReport(parsed.lines, dur)
+        val shown = parsed.lines
+            .filter { it.startMs >= 0 }
+            .sortedBy { it.startMs }
+            .mapIndexed { i, l -> l.copy(id = i.toLong()) }
+        _preview.value = PreviewData(label, parsed.format, shown, report)
+        player.pause()
+        seekTo(0L)
+    }
+
+    /** Renders the current project (ELARC if it has word timings, else LRC) and opens it as a preview. */
+    fun previewCurrent(): Boolean {
+        val m = _meta.value ?: return false
+        val ls = _lines.value
+        if (ls.none { it.startMs >= 0 }) return false
+        val hasWords = ls.any { l -> l.words.isNotEmpty() && l.words.all { it.startMs >= 0 } }
+        val format = if (hasWords) ExportFormat.ELARC else ExportFormat.LRC
+        val dur = if (_duration.value > 0) _duration.value else m.durationMs
+        val text = LyricsExporter.render(
+            format, m.title, m.artist, dur, ls,
+            TtmlStyle(m.ttmlFontSize, m.ttmlColor, m.ttmlPosition), false
+        )
+        setPreview(text, "${m.title}.${format.ext} (current result)")
+        return true
+    }
+
+    /** Saves right now, even if nothing changed since the last autosave. */
+    fun saveNow() {
+        if (_loaded.value) viewModelScope.launch { persist() }
     }
 
     override fun onCleared() {

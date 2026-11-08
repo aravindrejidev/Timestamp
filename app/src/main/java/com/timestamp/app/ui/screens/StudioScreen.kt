@@ -1,5 +1,6 @@
 package com.timestamp.app.ui.screens
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -28,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -47,10 +49,12 @@ import com.timestamp.app.data.LyricLine
 import com.timestamp.app.data.SyncMode
 import com.timestamp.app.data.WordTiming
 import com.timestamp.app.format.TimeFmt
+import com.timestamp.app.format.currentLineIndex
 import com.timestamp.app.format.splitWords
-import com.timestamp.app.ui.components.CircleIconButton
-import com.timestamp.app.ui.components.GlassCard
+import com.timestamp.app.ui.components.TsIconButton
+import com.timestamp.app.ui.components.Panel
 import com.timestamp.app.ui.components.NeonButton
+import com.timestamp.app.ui.components.SeekPill
 import com.timestamp.app.ui.components.TsChip
 import com.timestamp.app.ui.components.TsDialog
 import com.timestamp.app.ui.components.WaveformView
@@ -77,18 +81,6 @@ private enum class LineAction(val label: String, val icon: ImageVector) {
     DELETE("Delete line", Icons.Rounded.Delete)
 }
 
-private fun currentLineIndex(lines: List<LyricLine>, posMs: Long): Int {
-    var best = -1
-    var bestStart = -1L
-    lines.forEachIndexed { i, l ->
-        if (l.startMs in 0..posMs && l.startMs >= bestStart) {
-            best = i
-            bestStart = l.startMs
-        }
-    }
-    return best
-}
-
 private fun nextWordText(line: LyricLine?): String {
     if (line == null) return "-"
     val ws = if (line.words.isEmpty()) splitWords(line.text).map { WordTiming(it) } else line.words
@@ -96,7 +88,7 @@ private fun nextWordText(line: LyricLine?): String {
 }
 
 @Composable
-fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit) {
+fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit, onPreview: () -> Unit) {
     val loaded by vm.loaded.collectAsStateWithLifecycle()
     val meta by vm.meta.collectAsStateWithLifecycle()
     val lines by vm.lines.collectAsStateWithLifecycle()
@@ -111,6 +103,7 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit) 
     var menuOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
 
     BackHandler {
         vm.pause()
@@ -151,7 +144,7 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit) 
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            CircleIconButton(
+            TsIconButton(
                 Icons.AutoMirrored.Rounded.ArrowBack,
                 onClick = { vm.pause(); vm.save(); onBack() },
                 size = 40.dp, contentDescription = "Back"
@@ -172,34 +165,60 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit) 
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            CircleIconButton(
+            TsIconButton(
                 Icons.AutoMirrored.Rounded.Undo, onClick = { vm.undo() },
                 size = 40.dp, enabled = canUndo, contentDescription = "Undo"
             )
-            CircleIconButton(
+            TsIconButton(
                 Icons.Rounded.Download, onClick = { vm.pause(); vm.save(); onExport() },
                 size = 40.dp, tint = TsColors.Neon, contentDescription = "Export"
             )
             Box {
-                CircleIconButton(
+                TsIconButton(
                     Icons.Rounded.MoreVert, onClick = { menuOpen = true },
                     size = 40.dp, contentDescription = "More tools"
                 )
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    MenuRow("Preview result", Icons.Rounded.PlayArrow) {
+                        menuOpen = false
+                        vm.pause()
+                        vm.save()
+                        if (vm.previewCurrent()) {
+                            onPreview()
+                        } else {
+                            Toast.makeText(context, "Sync at least one line first", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                     MenuRow("Offset all timestamps", Icons.Rounded.Timer) {
-                        menuOpen = false; dialog = StudioDialog.Offset
+                        menuOpen = false
+                        if (syncedCount > 0) {
+                            dialog = StudioDialog.Offset
+                        } else {
+                            Toast.makeText(context, "Sync at least one line first", Toast.LENGTH_SHORT).show()
+                        }
                     }
                     MenuRow("Add line at end", Icons.Rounded.Add) {
-                        menuOpen = false; dialog = StudioDialog.Insert(lines.lastIndex)
+                        menuOpen = false
+                        dialog = StudioDialog.Insert(lines.lastIndex)
                     }
                     MenuRow("Estimate word timings", Icons.Rounded.AutoFixHigh) {
-                        menuOpen = false; vm.estimateWordTimings()
+                        menuOpen = false
+                        val n = vm.estimateWordTimings()
+                        Toast.makeText(
+                            context,
+                            if (n > 0) "Word timings estimated for $n lines" else "Nothing to estimate. Sync some lines first.",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                     MenuRow("Clear all timestamps", Icons.Rounded.RestartAlt) {
-                        menuOpen = false; vm.clearAllTimestamps()
+                        menuOpen = false
+                        vm.clearAllTimestamps()
+                        Toast.makeText(context, "All timestamps cleared. Undo is available.", Toast.LENGTH_SHORT).show()
                     }
                     MenuRow("Save project", Icons.Rounded.Save) {
-                        menuOpen = false; vm.save()
+                        menuOpen = false
+                        vm.saveNow()
+                        Toast.makeText(context, "Project saved", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -237,6 +256,7 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit) 
                 LyricRow(
                     line = line,
                     isCursor = i == cursor,
+                    isLast = i == lines.lastIndex,
                     isPlaying = i == playingIndex,
                     wordMode = mode == SyncMode.WORD,
                     onSelect = { vm.selectLine(i) },
@@ -284,8 +304,12 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit) 
                     "Next word: ${nextWordText(lines.getOrNull(cursor))}"
                 },
                 onTap = {
-                    vm.tap()
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (lines.isEmpty()) {
+                        Toast.makeText(context, "Add a lyric line first", Toast.LENGTH_SHORT).show()
+                    } else {
+                        vm.tap()
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
                 }
             )
         }
@@ -313,7 +337,7 @@ private fun PlayerPanel(vm: EditorViewModel) {
     val lines by vm.lines.collectAsStateWithLifecycle()
     val markers = remember(lines) { lines.filter { it.startMs >= 0 }.map { it.startMs } }
 
-    GlassCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp), contentPadding = PaddingValues(12.dp)) {
+    Panel(Modifier.fillMaxWidth().padding(horizontal = 16.dp), contentPadding = PaddingValues(12.dp)) {
         WaveformView(
             waveform = waveform,
             positionMs = position,
@@ -370,28 +394,11 @@ private fun PlayerPanel(vm: EditorViewModel) {
 }
 
 @Composable
-private fun SeekPill(text: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(50)
-    Box(
-        Modifier
-            .width(50.dp)
-            .height(38.dp)
-            .clip(shape)
-            .background(TsColors.Chip)
-            .border(1.dp, TsColors.Border, shape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text, color = TsColors.TextPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-    }
-}
-
-@Composable
 private fun TapButton(title: String, subtitle: String, onTap: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (pressed) 0.97f else 1f, label = "tapScale")
     val tapCallback by rememberUpdatedState(onTap)
-    val shape = RoundedCornerShape(36.dp)
+    val shape = RoundedCornerShape(20.dp)
     val glow = LocalGlow.current
     Box(
         Modifier
@@ -403,7 +410,7 @@ private fun TapButton(title: String, subtitle: String, onTap: () -> Unit) {
                 else Modifier
             )
             .clip(shape)
-            .background(Brush.horizontalGradient(listOf(TsColors.Neon, TsColors.NeonSoft)))
+            .background(TsColors.Neon)
             .pointerInput(Unit) {
                 // Fires on touch-down for the lowest possible latency.
                 detectTapGestures(onPress = {
@@ -466,13 +473,14 @@ private fun buildLineText(line: LyricLine, isCursor: Boolean, isPlaying: Boolean
 private fun LyricRow(
     line: LyricLine,
     isCursor: Boolean,
+    isLast: Boolean,
     isPlaying: Boolean,
     wordMode: Boolean,
     onSelect: () -> Unit,
     onStamp: () -> Unit,
     onAction: (LineAction) -> Unit
 ) {
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(12.dp)
     var menu by remember { mutableStateOf(false) }
     val text = remember(line, isCursor, isPlaying, wordMode) { buildLineText(line, isCursor, isPlaying, wordMode) }
     val synced = line.startMs >= 0
@@ -509,7 +517,13 @@ private fun LyricRow(
                 Icon(Icons.Rounded.MoreVert, "Line tools", tint = TsColors.TextSecondary)
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                LineAction.entries.forEach { a ->
+                LineAction.entries.filter { a ->
+                    when (a) {
+                        LineAction.MERGE -> !isLast
+                        LineAction.CLEAR -> synced
+                        else -> true
+                    }
+                }.forEach { a ->
                     MenuRow(a.label, a.icon) {
                         menu = false
                         onAction(a)

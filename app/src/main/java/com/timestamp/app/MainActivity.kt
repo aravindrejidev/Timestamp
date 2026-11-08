@@ -6,25 +6,22 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Scaffold
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.runtime.getValue
 import com.timestamp.app.ui.Routes
-import com.timestamp.app.ui.components.FloatingDock
 import com.timestamp.app.ui.screens.ExportScreen
 import com.timestamp.app.ui.screens.HomeScreen
 import com.timestamp.app.ui.screens.ImportScreen
+import com.timestamp.app.ui.screens.PreviewScreen
 import com.timestamp.app.ui.screens.SettingsScreen
 import com.timestamp.app.ui.screens.StudioScreen
 import com.timestamp.app.ui.theme.LocalBackgroundBrush
@@ -57,72 +54,58 @@ private fun TimestampRoot() {
         val importVm: ImportViewModel = viewModel()
         val editorVm: EditorViewModel = viewModel()
 
-        val meta by editorVm.meta.collectAsStateWithLifecycle()
-        val backStack by nav.currentBackStackEntryAsState()
-        val route = backStack?.destination?.route
-        val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-        val showDock = route != null && route != Routes.STUDIO && !imeVisible
-
-        fun go(target: String) {
-            if (target == route) return
-            nav.navigate(target) {
-                popUpTo(Routes.HOME)
-                launchSingleTop = true
-            }
-        }
-
         Box(Modifier.fillMaxSize().background(LocalBackgroundBrush.current)) {
-            Scaffold(
-                containerColor = Color.Transparent,
-                bottomBar = {
-                    if (showDock) {
-                        FloatingDock(
-                            current = route,
-                            studioEnabled = meta != null,
-                            onNavigate = { go(it) }
-                        )
-                    }
+            NavHost(
+                navController = nav,
+                startDestination = Routes.HOME,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                composable(Routes.HOME) {
+                    HomeScreen(
+                        vm = homeVm,
+                        onNew = { nav.navigate(Routes.IMPORT) },
+                        onOpen = { id ->
+                            editorVm.openProject(id)
+                            nav.navigate(Routes.STUDIO)
+                        },
+                        onDelete = { id ->
+                            homeVm.delete(id)
+                            editorVm.onDeleted(id)
+                        },
+                        onSettings = { nav.navigate(Routes.SETTINGS) }
+                    )
                 }
-            ) { inner ->
-                NavHost(
-                    navController = nav,
-                    startDestination = Routes.HOME,
-                    modifier = Modifier.padding(bottom = inner.calculateBottomPadding())
-                ) {
-                    composable(Routes.HOME) {
-                        HomeScreen(
-                            vm = homeVm,
-                            onNew = { go(Routes.IMPORT) },
-                            onOpen = { id ->
-                                editorVm.openProject(id)
-                                nav.navigate(Routes.STUDIO)
-                            },
-                            onDelete = { id ->
-                                homeVm.delete(id)
-                                editorVm.onDeleted(id)
-                            },
-                            onSettings = { go(Routes.SETTINGS) }
-                        )
-                    }
-                    composable(Routes.IMPORT) {
-                        ImportScreen(importVm) { id ->
+                composable(Routes.IMPORT) {
+                    ImportScreen(
+                        vm = importVm,
+                        onBack = { nav.popBackStack() },
+                        onCreated = { id ->
                             editorVm.openProject(id)
                             nav.navigate(Routes.STUDIO) { popUpTo(Routes.HOME) }
                         }
-                    }
-                    composable(Routes.STUDIO) {
-                        StudioScreen(
-                            vm = editorVm,
-                            onBack = { nav.popBackStack() },
-                            onExport = { nav.navigate(Routes.EXPORT) }
-                        )
-                    }
-                    composable(Routes.EXPORT) {
-                        ExportScreen(editorVm, settings, onBack = { nav.popBackStack() })
-                    }
-                    composable(Routes.SETTINGS) {
-                        SettingsScreen(settings)
-                    }
+                    )
+                }
+                composable(Routes.STUDIO) {
+                    StudioScreen(
+                        vm = editorVm,
+                        onBack = { nav.popBackStack() },
+                        onExport = { nav.navigate(Routes.EXPORT) },
+                        onPreview = { nav.navigate(Routes.PREVIEW) }
+                    )
+                }
+                composable(Routes.EXPORT) {
+                    ExportScreen(
+                        vm = editorVm,
+                        settings = settings,
+                        onBack = { nav.popBackStack() },
+                        onPreview = { nav.navigate(Routes.PREVIEW) }
+                    )
+                }
+                composable(Routes.PREVIEW) {
+                    PreviewScreen(vm = editorVm, onBack = { nav.popBackStack() })
+                }
+                composable(Routes.SETTINGS) {
+                    SettingsScreen(settings = settings, onBack = { nav.popBackStack() })
                 }
             }
         }

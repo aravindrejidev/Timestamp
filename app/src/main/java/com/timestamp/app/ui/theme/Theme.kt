@@ -17,11 +17,12 @@ object TsColors {
     val NeonSoft = Color(0xFF69F0AE)
     val BgTop = Color(0xFF121212)
     val BgBottom = Color(0xFF0D0D0D)
-    val Card = Color(0xFF1A1A1C)
-    val CardTop = Color(0xFF242427)
-    val Chip = Color(0xFF262628)
-    val Border = Color(0x1FFFFFFF)
-    val FieldBorder = Color(0x33FFFFFF)
+    val Card = Color(0xFF161618)
+    val CardTop = Color(0xFF1E1E21)
+    val Chip = Color(0xFF212125)
+    val Border = Color(0x26FFFFFF)
+    val FieldBorder = Color(0x40FFFFFF)
+    val Amber = Color(0xFFFFB74D)
     val TextPrimary = Color(0xFFF2F2F2)
     val TextSecondary = Color(0xFF9A9AA0)
     val Danger = Color(0xFFFF5252)
@@ -34,7 +35,7 @@ val LocalBackgroundBrush = compositionLocalOf {
 
 val TsTypography = Typography(
     displayLarge = TextStyle(fontWeight = FontWeight.Light, fontSize = 44.sp, lineHeight = 50.sp, letterSpacing = (-1).sp),
-    headlineMedium = TextStyle(fontWeight = FontWeight.Light, fontSize = 30.sp, lineHeight = 36.sp),
+    headlineMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 26.sp, lineHeight = 32.sp),
     titleLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 20.sp, lineHeight = 26.sp),
     titleMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 16.sp, lineHeight = 22.sp),
     bodyLarge = TextStyle(fontWeight = FontWeight.Normal, fontSize = 16.sp, lineHeight = 24.sp),

@@ -17,4 +17,7 @@ If the IDE does not pick up the wrapper, choose Gradle 8.9 under Settings > Buil
 - `format/` LRC / Enhanced LRC parser and the LRC, ELARC, TTML exporters
 - `audio/` MediaCodec waveform extractor
 - `viewmodel/` Home, Import and Editor (player, tap sync, split / merge / offset, undo, autosave)
-- `ui/` theme, shared components, Home / Import / Studio / Export / Settings screens
+- `ui/` theme, shared components, Home / Import / Studio / Export / Preview / Settings screens
+
+## Checking your result
+Export > **Preview and check** plays the song with the lyrics read back from the generated text (LRC, ELARC or TTML), with automatic checks (order, overlaps, missing lines). After **Save as**, tap **Preview saved file** to read the real saved file back. In Preview, the folder icon opens any saved .lrc / .elrc / .ttml file.

@@ -244,3 +244,125 @@ object LyricsExporter {
         return sb.toString()
     }
 }
+
+/** Index of the line that is "current" at [posMs] (last line whose start has passed), or -1. */
+fun currentLineIndex(lines: List<LyricLine>, posMs: Long): Int {
+    var best = -1
+    var bestStart = -1L
+    lines.forEachIndexed { i, l ->
+        if (l.startMs in 0..posMs && l.startMs >= bestStart) {
+            best = i
+            bestStart = l.startMs
+        }
+    }
+    return best
+}
+
+data class ParsedFile(val format: String, val lines: List<LyricLine>)
+
+/** Reads a TTML file back into lines (and word spans when present). */
+object TtmlParser {
+    private val pTag = Regex("<p\\b([^>]*)>(.*?)</p>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+    private val spanTag = Regex("<span\\b([^>]*)>(.*?)</span>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+    private val anyTag = Regex("<[^>]+>")
+
+    private fun attr(attrs: String, name: String): String? =
+        Regex("\\b" + name + "\\s*=\\s*\"([^\"]*)\"").find(attrs)?.groupValues?.get(1)
+
+    private fun unescape(s: String): String = s
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+
+    private fun time(raw: String?): Long? {
+        val s = raw?.trim() ?: return null
+        if (s.endsWith("s") && !s.contains(':')) {
+            return s.dropLast(1).toDoubleOrNull()?.let { Math.round(it * 1000.0) }
+        }
+        val parts = s.split(':')
+        if (parts.size !in 2..3) return null
+        val secs = parts.last().toDoubleOrNull() ?: return null
+        val mins = parts[parts.size - 2].toLongOrNull() ?: return null
+        val hours = if (parts.size == 3) (parts[0].toLongOrNull() ?: return null) else 0L
+        return Math.round((hours * 3600.0 + mins * 60.0 + secs) * 1000.0)
+    }
+
+    fun parse(xml: String): List<LyricLine> {
+        val out = ArrayList<LyricLine>()
+        for (m in pTag.findAll(xml)) {
+            val attrs = m.groupValues[1]
+            val inner = m.groupValues[2]
+            val start = time(attr(attrs, "begin")) ?: continue
+            val end = time(attr(attrs, "end")) ?: -1L
+            val words = spanTag.findAll(inner).mapNotNull { sm ->
+                val ws = time(attr(sm.groupValues[1], "begin"))
+                val we = time(attr(sm.groupValues[1], "end"))
+                val txt = unescape(anyTag.replace(sm.groupValues[2], "")).trim()
+                if (ws == null || txt.isEmpty()) null else WordTiming(txt, ws, we ?: (ws + 300L))
+            }.toList()
+            val text = if (words.isNotEmpty()) {
+                words.joinToString(" ") { it.text }
+            } else {
+                unescape(anyTag.replace(inner, "")).trim()
+            }
+            if (text.isBlank()) continue
+            out.add(LyricLine(0, text, start, end, words))
+        }
+        return out.mapIndexed { i, l -> l.copy(id = i.toLong()) }
+    }
+}
+
+/** Detects LRC / ELARC / TTML from the text itself, so a saved file can be checked as-is. */
+object PreviewParser {
+    fun parse(text: String): ParsedFile {
+        val t = text.trimStart('\uFEFF')
+        return if (t.contains("<tt", ignoreCase = true) && t.contains("<p", ignoreCase = true)) {
+            ParsedFile("TTML", TtmlParser.parse(t))
+        } else {
+            val lines = LyricsParser.parse(t)
+            val enhanced = lines.any { it.words.isNotEmpty() }
+            ParsedFile(if (enhanced) "ELARC" else "LRC", lines)
+        }
+    }
+}
+
+data class PreviewReport(
+    val synced: Int,
+    val unsynced: Int,
+    val withWords: Int,
+    val outOfOrder: Int,
+    val overlaps: Int,
+    val longGaps: Int,
+    val beyondAudio: Int
+)
+
+/** Sanity checks on a parsed file, in file order. */
+fun buildReport(lines: List<LyricLine>, durationMs: Long): PreviewReport {
+    val synced = lines.filter { it.startMs >= 0 }
+    val sorted = synced.sortedBy { it.startMs }
+    var outOfOrder = 0
+    for (i in 1 until synced.size) {
+        if (synced[i].startMs < synced[i - 1].startMs) outOfOrder++
+    }
+    var overlaps = 0
+    var gaps = 0
+    for (i in 0 until sorted.size - 1) {
+        val l = sorted[i]
+        val n = sorted[i + 1]
+        if (l.endMs >= 0 && l.endMs > n.startMs + 50L) overlaps++
+        val prevEnd = if (l.endMs > l.startMs) l.endMs else l.startMs
+        if (n.startMs - prevEnd > 15_000L) gaps++
+    }
+    val beyond = if (durationMs > 0) synced.count { it.startMs > durationMs } else 0
+    return PreviewReport(
+        synced = synced.size,
+        unsynced = lines.size - synced.size,
+        withWords = synced.count { it.words.isNotEmpty() },
+        outOfOrder = outOfOrder,
+        overlaps = overlaps,
+        longGaps = gaps,
+        beyondAudio = beyond
+    )
+}

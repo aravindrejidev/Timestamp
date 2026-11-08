@@ -10,12 +10,21 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.*
-import androidx.compose.material3.*
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,22 +42,31 @@ import com.timestamp.app.data.SettingsRepository
 import com.timestamp.app.format.ExportFormat
 import com.timestamp.app.format.LyricsExporter
 import com.timestamp.app.format.TtmlStyle
-import com.timestamp.app.ui.components.CircleIconButton
 import com.timestamp.app.ui.components.GhostButton
-import com.timestamp.app.ui.components.GlassCard
 import com.timestamp.app.ui.components.NeonButton
+import com.timestamp.app.ui.components.Panel
+import com.timestamp.app.ui.components.ScreenHeader
 import com.timestamp.app.ui.components.SectionLabel
 import com.timestamp.app.ui.components.TsChip
 import com.timestamp.app.ui.theme.TsColors
 import com.timestamp.app.util.FileUtils
 import com.timestamp.app.viewmodel.EditorViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val ttmlColors = listOf("#FFFFFF", "#00E676", "#FFEB3B", "#40C4FF", "#FF80AB", "#FFAB40")
 
 @Composable
-fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -> Unit) {
+fun ExportScreen(
+    vm: EditorViewModel,
+    settings: SettingsRepository,
+    onBack: () -> Unit,
+    onPreview: () -> Unit
+) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     val meta by vm.meta.collectAsStateWithLifecycle()
     val lines by vm.lines.collectAsStateWithLifecycle()
     val duration by vm.durationMs.collectAsStateWithLifecycle()
@@ -56,6 +74,7 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
     val folder by settings.exportFolder.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(0) }
     var pendingText by remember { mutableStateOf("") }
+    var lastSaved by remember { mutableStateOf<Pair<Uri, String>?>(null) }
 
     DisposableEffect(Unit) { onDispose { vm.save() } }
 
@@ -64,7 +83,12 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
     ) { uri ->
         if (uri != null) {
             val ok = FileUtils.writeToUri(context, uri, pendingText)
-            Toast.makeText(context, if (ok) "File saved" else "Could not save the file", Toast.LENGTH_SHORT).show()
+            if (ok) {
+                lastSaved = uri to FileUtils.displayName(context, uri)
+                Toast.makeText(context, "File saved", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Could not save the file", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -99,20 +123,12 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
         Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            CircleIconButton(
-                Icons.AutoMirrored.Rounded.ArrowBack, onClick = onBack,
-                size = 40.dp, contentDescription = "Back"
-            )
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text("Export hub", color = TsColors.TextPrimary, style = MaterialTheme.typography.headlineMedium)
-            }
-        }
+        ScreenHeader("Export", onBack, subtitle = m.title)
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ExportFormat.entries.forEachIndexed { i, f ->
@@ -120,14 +136,14 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
             }
         }
 
-        GlassCard(Modifier.fillMaxWidth()) {
+        Panel(Modifier.fillMaxWidth()) {
             Text(
                 "$synced of $total lines synced",
                 color = TsColors.TextPrimary,
                 style = MaterialTheme.typography.titleMedium
             )
             Text(
-                if (canExport) "Unsynced lines are left out of the exported file."
+                if (canExport) "Unsynced lines are left out of the file. Use Preview to check the result."
                 else "Sync at least one line in the Studio to export.",
                 color = TsColors.TextSecondary,
                 style = MaterialTheme.typography.bodyMedium
@@ -135,7 +151,7 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
         }
 
         if (format != ExportFormat.LRC) {
-            GlassCard(Modifier.fillMaxWidth()) {
+            Panel(Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(
@@ -166,7 +182,7 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
         }
 
         if (format == ExportFormat.TTML) {
-            GlassCard(Modifier.fillMaxWidth()) {
+            Panel(Modifier.fillMaxWidth()) {
                 SectionLabel("TTML style")
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -214,17 +230,17 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
             }
         }
 
-        GlassCard(Modifier.fillMaxWidth()) {
-            SectionLabel("Preview  ·  $fileName")
+        Panel(Modifier.fillMaxWidth()) {
+            SectionLabel("File text  ·  $fileName")
             Spacer(Modifier.height(8.dp))
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 320.dp)
+                    .heightIn(max = 260.dp)
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    if (canExport) preview else "Nothing to preview yet.",
+                    if (canExport) preview else "Nothing to show yet.",
                     color = TsColors.TextPrimary,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
@@ -234,18 +250,21 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
         }
 
         NeonButton(
-            "Share file",
+            "Preview and check",
             onClick = {
-                try {
-                    FileUtils.share(context, fileName, preview)
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Could not share the file", Toast.LENGTH_SHORT).show()
-                }
+                vm.setPreview(preview, "$fileName (current export)")
+                onPreview()
             },
-            icon = Icons.Rounded.Share,
+            icon = Icons.Rounded.PlayArrow,
             enabled = canExport,
             modifier = Modifier.fillMaxWidth()
         )
+        Text(
+            "Plays your song with this file's lyrics, so you can see if the timing is right.",
+            color = TsColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall
+        )
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             GhostButton(
                 "Save as…",
@@ -258,7 +277,22 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
                 modifier = Modifier.weight(1f)
             )
             GhostButton(
-                "Copy",
+                "Share",
+                onClick = {
+                    try {
+                        FileUtils.share(context, fileName, preview)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Could not share the file", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                icon = Icons.Rounded.Share,
+                enabled = canExport,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            GhostButton(
+                "Copy text",
                 onClick = {
                     clipboard.setText(AnnotatedString(preview))
                     Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
@@ -267,22 +301,53 @@ fun ExportScreen(vm: EditorViewModel, settings: SettingsRepository, onBack: () -
                 enabled = canExport,
                 modifier = Modifier.weight(1f)
             )
+            if (folder != null) {
+                GhostButton(
+                    "Default folder",
+                    onClick = {
+                        val saved = FileUtils.saveToFolder(context, Uri.parse(folder), fileName, preview)
+                        if (saved != null) {
+                            lastSaved = saved to FileUtils.displayName(context, saved)
+                            Toast.makeText(context, "Saved to default folder", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Could not write to the default folder", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    icon = Icons.Rounded.FolderOpen,
+                    enabled = canExport,
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
-        if (folder != null) {
-            GhostButton(
-                "Save to default folder",
-                onClick = {
-                    val ok = FileUtils.saveToFolder(context, Uri.parse(folder), fileName, preview)
-                    Toast.makeText(
-                        context,
-                        if (ok) "Saved to default folder" else "Could not write to the default folder",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                },
-                icon = Icons.Rounded.FolderOpen,
-                enabled = canExport,
-                modifier = Modifier.fillMaxWidth()
-            )
+
+        lastSaved?.let { (uri, name) ->
+            Panel(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.CheckCircle, null, tint = TsColors.Neon)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Saved", color = TsColors.TextPrimary, style = MaterialTheme.typography.titleMedium)
+                        Text(name, color = TsColors.TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                GhostButton(
+                    "Preview saved file",
+                    onClick = {
+                        scope.launch {
+                            val text = withContext(Dispatchers.IO) { FileUtils.readText(context, uri) }
+                            if (text == null) {
+                                Toast.makeText(context, "Could not read the saved file", Toast.LENGTH_SHORT).show()
+                            } else {
+                                vm.setPreview(text, "$name (saved file)")
+                                onPreview()
+                            }
+                        }
+                    },
+                    icon = Icons.Rounded.PlayArrow,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
         Spacer(Modifier.height(8.dp))
     }

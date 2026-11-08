@@ -20,13 +20,14 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.timestamp.app.data.SettingsRepository
 import com.timestamp.app.ui.components.GhostButton
-import com.timestamp.app.ui.components.GlassCard
+import com.timestamp.app.ui.components.Panel
+import com.timestamp.app.ui.components.ScreenHeader
 import com.timestamp.app.ui.components.SectionLabel
 import com.timestamp.app.ui.theme.TsColors
 import kotlin.math.roundToInt
 
 @Composable
-fun SettingsScreen(settings: SettingsRepository) {
+fun SettingsScreen(settings: SettingsRepository, onBack: () -> Unit) {
     val context = LocalContext.current
     val amoled by settings.amoled.collectAsStateWithLifecycle()
     val glow by settings.glow.collectAsStateWithLifecycle()
@@ -61,13 +62,14 @@ fun SettingsScreen(settings: SettingsRepository) {
         Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Settings", color = TsColors.TextPrimary, style = MaterialTheme.typography.headlineMedium)
+        ScreenHeader("Settings", onBack)
 
-        GlassCard(Modifier.fillMaxWidth()) {
+        Panel(Modifier.fillMaxWidth()) {
             SectionLabel("Appearance")
             Spacer(Modifier.height(8.dp))
             SettingSwitch("AMOLED black", "Pure black background instead of matte dark grey", amoled, settings::setAmoled)
@@ -79,7 +81,7 @@ fun SettingsScreen(settings: SettingsRepository) {
             )
         }
 
-        GlassCard(Modifier.fillMaxWidth()) {
+        Panel(Modifier.fillMaxWidth()) {
             SectionLabel("Sync")
             Spacer(Modifier.height(8.dp))
             Text(
@@ -104,7 +106,7 @@ fun SettingsScreen(settings: SettingsRepository) {
             )
         }
 
-        GlassCard(Modifier.fillMaxWidth()) {
+        Panel(Modifier.fillMaxWidth()) {
             SectionLabel("Storage")
             Spacer(Modifier.height(8.dp))
             Text("Default export folder", color = TsColors.TextPrimary, style = MaterialTheme.typography.bodyLarge)
@@ -122,7 +124,7 @@ fun SettingsScreen(settings: SettingsRepository) {
             }
         }
 
-        GlassCard(Modifier.fillMaxWidth()) {
+        Panel(Modifier.fillMaxWidth()) {
             SectionLabel("About")
             Spacer(Modifier.height(8.dp))
             Text("Timestamp $version", color = TsColors.TextPrimary, style = MaterialTheme.typography.titleMedium)

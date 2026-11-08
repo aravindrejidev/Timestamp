@@ -5,5 +5,6 @@ object Routes {
     const val IMPORT = "import"
     const val STUDIO = "studio"
     const val EXPORT = "export"
+    const val PREVIEW = "preview"
     const val SETTINGS = "settings"
 }

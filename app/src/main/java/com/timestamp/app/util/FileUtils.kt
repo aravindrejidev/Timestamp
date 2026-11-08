@@ -39,13 +39,14 @@ object FileUtils {
         false
     }
 
-    fun saveToFolder(context: Context, folderUri: Uri, name: String, text: String): Boolean {
+    /** Creates [name] inside the chosen folder and returns its Uri, or null on failure. */
+    fun saveToFolder(context: Context, folderUri: Uri, name: String, text: String): Uri? {
         return try {
-            val dir = DocumentFile.fromTreeUri(context, folderUri) ?: return false
-            val file = dir.createFile("application/octet-stream", name) ?: return false
-            writeToUri(context, file.uri, text)
+            val dir = DocumentFile.fromTreeUri(context, folderUri) ?: return null
+            val file = dir.createFile("application/octet-stream", name) ?: return null
+            if (writeToUri(context, file.uri, text)) file.uri else null
         } catch (e: Exception) {
-            false
+            null
         }
     }
 
