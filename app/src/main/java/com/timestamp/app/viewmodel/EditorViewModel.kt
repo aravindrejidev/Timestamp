@@ -1,7 +1,13 @@
 package com.timestamp.app.viewmodel
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.C
@@ -26,6 +32,7 @@ import com.timestamp.app.format.buildReport
 import com.timestamp.app.format.distributeWords
 import com.timestamp.app.format.effectiveEnd
 import com.timestamp.app.format.splitWords
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -37,6 +44,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class EditorMeta(
     val id: Long,
@@ -93,6 +101,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _preview = MutableStateFlow<PreviewData?>(null)
     val preview: StateFlow<PreviewData?> = _preview.asStateFlow()
+
+    private val _cover = MutableStateFlow<ImageBitmap?>(null)
+    val cover: StateFlow<ImageBitmap?> = _cover.asStateFlow()
+    private val _coverTint = MutableStateFlow<Color?>(null)
+    val coverTint: StateFlow<Color?> = _coverTint.asStateFlow()
+    private var coverJob: Job? = null
 
     private val undo = kotlin.collections.ArrayDeque<List<LyricLine>>()
     private var nextId = 0L
@@ -172,7 +186,59 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         waveformJob = viewModelScope.launch {
             _waveform.value = WaveformExtractor.extract(getApplication(), uri)
         }
+        loadCover(uri)
         _loaded.value = true
+    }
+
+    /** Reads the cover picture embedded in the audio file (if any) and a tint colour from it. */
+    private fun loadCover(uri: Uri) {
+        coverJob?.cancel()
+        _cover.value = null
+        _coverTint.value = null
+        coverJob = viewModelScope.launch {
+            val bmp = withContext(Dispatchers.IO) { decodeEmbeddedCover(uri) }
+            if (bmp != null) {
+                _cover.value = bmp.asImageBitmap()
+                _coverTint.value = averageColor(bmp)
+            }
+        }
+    }
+
+    private fun decodeEmbeddedCover(uri: Uri): Bitmap? {
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(getApplication<Application>(), uri)
+            val bytes = r.embeddedPicture ?: return null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            while (bounds.outWidth / sample > 600) sample *= 2
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        } catch (e: Exception) {
+            null
+        } finally {
+            try { r.release() } catch (_: Exception) {}
+        }
+    }
+
+    private fun averageColor(bmp: Bitmap): Color {
+        val small = Bitmap.createScaledBitmap(bmp, 16, 16, true)
+        var r = 0L
+        var g = 0L
+        var b = 0L
+        var n = 0
+        for (y in 0 until 16) {
+            for (x in 0 until 16) {
+                val px = small.getPixel(x, y)
+                r += (px shr 16) and 0xFF
+                g += (px shr 8) and 0xFF
+                b += px and 0xFF
+                n++
+            }
+        }
+        val d = n * 255f
+        return Color(r / d, g / d, b / d)
     }
 
     /** Called when a project is deleted from the dashboard. */
@@ -180,6 +246,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (_meta.value?.id != id) return
         ticker?.cancel()
         waveformJob?.cancel()
+        coverJob?.cancel()
+        _cover.value = null
+        _coverTint.value = null
         player.stop()
         player.clearMediaItems()
         dirty = false
