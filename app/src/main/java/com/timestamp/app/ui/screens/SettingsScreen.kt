@@ -18,7 +18,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.timestamp.app.BuildConfig
 import com.timestamp.app.data.SettingsRepository
+import com.timestamp.app.update.UpdateState
+import com.timestamp.app.update.UpdateViewModel
+import com.timestamp.app.ui.components.NeonButton
 import com.timestamp.app.ui.components.GhostButton
 import com.timestamp.app.ui.components.Panel
 import com.timestamp.app.ui.components.ScreenHeader
@@ -27,12 +31,13 @@ import com.timestamp.app.ui.theme.TsColors
 import kotlin.math.roundToInt
 
 @Composable
-fun SettingsScreen(settings: SettingsRepository, onBack: () -> Unit) {
+fun SettingsScreen(settings: SettingsRepository, update: UpdateViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
     val amoled by settings.amoled.collectAsStateWithLifecycle()
     val glow by settings.glow.collectAsStateWithLifecycle()
     val tapComp by settings.tapCompMs.collectAsStateWithLifecycle()
     val folder by settings.exportFolder.collectAsStateWithLifecycle()
+    val updateState by update.state.collectAsStateWithLifecycle()
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -120,6 +125,44 @@ fun SettingsScreen(settings: SettingsRepository, onBack: () -> Unit) {
                 GhostButton("Choose folder", onClick = { picker.launch(null) }, icon = Icons.Rounded.FolderOpen)
                 if (folder != null) {
                     GhostButton("Clear", onClick = { settings.setExportFolder(null) })
+                }
+            }
+        }
+
+        Panel(Modifier.fillMaxWidth()) {
+            SectionLabel("Updates")
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Installed version $version",
+                color = TsColors.TextPrimary,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            val status = when (val u = updateState) {
+                is UpdateState.Checking -> "Checking for updates…"
+                is UpdateState.UpToDate -> "You have the latest version."
+                is UpdateState.CheckFailed -> u.message
+                is UpdateState.Available -> "Version ${u.info.versionName} is available."
+                is UpdateState.Downloading -> "Downloading the update…"
+                is UpdateState.Ready, is UpdateState.NeedsPermission -> "The update is ready to install."
+                is UpdateState.DownloadFailed -> "The last download failed."
+                UpdateState.Idle ->
+                    if (BuildConfig.UPDATE_REPO.isBlank()) "Updates work in builds made by GitHub Actions."
+                    else "The app checks for new versions every time it opens."
+            }
+            Text(status, color = TsColors.TextSecondary, style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GhostButton(
+                    "Check for updates",
+                    onClick = { update.checkManual() },
+                    enabled = updateState !is UpdateState.Checking && updateState !is UpdateState.Downloading
+                )
+                if (updateState is UpdateState.Available ||
+                    updateState is UpdateState.Ready ||
+                    updateState is UpdateState.NeedsPermission ||
+                    updateState is UpdateState.DownloadFailed
+                ) {
+                    NeonButton("View update", onClick = { update.showDialog() })
                 }
             }
         }

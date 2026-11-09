@@ -1,0 +1,123 @@
+name: Release APK
+
+# Manual release. Actions > Release APK > Run workflow, then fill in:
+#   version_code : whole number, higher than the previous release (1, 2, 3 ...)
+#   version_name : what users see, e.g. 1.1.0
+# The text of "release-notice.md" (in the repo root) becomes the update notice shown in the app.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: "Version number (versionCode): whole number, higher than the last release. Example: 2"
+        required: true
+        type: string
+      version_name:
+        description: "Version name. Example: 1.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION_CODE: ${{ inputs.version_code }}
+      VERSION_NAME: ${{ inputs.version_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the version numbers
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION_CODE" =~ ^[0-9]+$ ]] || { echo "::error::version_code must be a whole number, e.g. 2"; exit 1; }
+          [[ "$VERSION_NAME" =~ ^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::version_name must look like 1.2.3"; exit 1; }
+          if gh release view "v$VERSION_NAME" >/dev/null 2>&1; then
+            echo "::error::A release named v$VERSION_NAME already exists. Use a new version_name."
+            exit 1
+          fi
+          prev_url=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.assets[] | select(.name=="update.json") | .browser_download_url' 2>/dev/null || true)
+          if [ -n "$prev_url" ]; then
+            prev=$(curl -fsSL "$prev_url" | jq -r '.versionCode' 2>/dev/null || echo 0)
+            if [[ "$prev" =~ ^[0-9]+$ ]] && [ "$VERSION_CODE" -le "$prev" ]; then
+              echo "::error::version_code $VERSION_CODE must be higher than the last release ($prev)."
+              exit 1
+            fi
+          fi
+
+      - name: Load the signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Signing secrets are missing. Run the 'Create signing key' workflow once, then add KEYSTORE_BASE64 and KEYSTORE_PASSWORD as repository secrets."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build signed release APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: timestamp
+        run: gradle :app:assembleRelease -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" --stacktrace
+
+      - name: Verify the APK and write update.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -f "$APK" || { echo "::error::Signed APK was not produced"; exit 1; }
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs "$APK" | head -3
+          OUT="Timestamp-v${VERSION_NAME}.apk"
+          cp "$APK" "$OUT"
+          SHA=$(sha256sum "$OUT" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "$OUT")
+          jq -n --argjson code "$VERSION_CODE" --arg name "$VERSION_NAME" --arg apk "$OUT" --arg sha "$SHA" --argjson size "$SIZE" \
+            '{versionCode:$code, versionName:$name, apk:$apk, sha256:$sha, size:$size}' > update.json
+          cat update.json
+
+      - name: Prepare the update notice
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTICE=$(find . -maxdepth 1 -type f -iname 'release*notice*.md' | head -1)
+          if [ -n "$NOTICE" ]; then
+            cp "$NOTICE" notes.md
+            echo "Using $NOTICE as the update notice"
+          else
+            echo "Timestamp $VERSION_NAME" > notes.md
+            echo "No release notice file found, using a default text"
+          fi
+
+      - name: Publish the GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "v$VERSION_NAME" "Timestamp-v${VERSION_NAME}.apk" update.json \
+            --title "Timestamp $VERSION_NAME" \
+            --notes-file notes.md \
+            --target "$GITHUB_SHA" \
+            --latest

@@ -5,16 +5,35 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Release signing comes from the environment (set by the "Release APK" workflow).
+val keystorePath: String? = System.getenv("KEYSTORE_PATH")
+val hasKeystore = !keystorePath.isNullOrBlank()
+
 android {
     namespace = "com.timestamp.app"
     compileSdk = 35
 
     defaultConfig {
         applicationId = "com.timestamp.app"
-        minSdk = 26
+        // Android 7.0 and newer. One universal APK works on every CPU type (the app has no native code).
+        minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        // Set by the release workflow: -PversionCode=2 -PversionName=1.1.0
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (project.findProperty("versionName") as String?) ?: "1.0.0"
+        // "owner/repo" of the GitHub repository (filled automatically by GitHub Actions).
+        buildConfigField("String", "UPDATE_REPO", "\"${System.getenv("GITHUB_REPOSITORY") ?: ""}\"")
+    }
+
+    signingConfigs {
+        create("release") {
+            if (hasKeystore) {
+                storeFile = file(keystorePath!!)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS") ?: "timestamp"
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -22,6 +41,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (hasKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -34,6 +56,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources {

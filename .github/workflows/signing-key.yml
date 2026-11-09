@@ -1,0 +1,45 @@
+name: Create signing key (run once)
+
+# Creates the key that signs every release, so in-app updates install over the old version.
+# Run it ONCE. Then:
+#   1. Download the "signing-key" artifact from the finished run (bottom of the run page)
+#   2. Create repository secrets (Settings > Secrets and variables > Actions):
+#        KEYSTORE_BASE64   = text inside KEYSTORE_BASE64.txt
+#        KEYSTORE_PASSWORD = text inside KEYSTORE_PASSWORD.txt
+#   3. Keep a private backup of both files, then delete this run.
+# If the key is lost, users must uninstall the app once before they can update.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keygen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate the keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          PASS=$(openssl rand -hex 16)
+          echo "::add-mask::$PASS"
+          keytool -genkeypair -keystore timestamp.keystore -storetype PKCS12 \
+            -alias timestamp -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass "$PASS" -keypass "$PASS" \
+            -dname "CN=Timestamp, O=Timestamp, C=IN" >/dev/null 2>&1
+          mkdir out
+          base64 -w0 timestamp.keystore > out/KEYSTORE_BASE64.txt
+          printf '%s' "$PASS" > out/KEYSTORE_PASSWORD.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signing-key
+          path: out
+          retention-days: 1

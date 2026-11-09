@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -24,8 +25,10 @@ import com.timestamp.app.ui.screens.ImportScreen
 import com.timestamp.app.ui.screens.PreviewScreen
 import com.timestamp.app.ui.screens.SettingsScreen
 import com.timestamp.app.ui.screens.StudioScreen
+import com.timestamp.app.ui.screens.UpdateHost
 import com.timestamp.app.ui.theme.LocalBackgroundBrush
 import com.timestamp.app.ui.theme.TimestampTheme
+import com.timestamp.app.update.UpdateViewModel
 import com.timestamp.app.viewmodel.EditorViewModel
 import com.timestamp.app.viewmodel.HomeViewModel
 import com.timestamp.app.viewmodel.ImportViewModel
@@ -53,6 +56,10 @@ private fun TimestampRoot() {
         val homeVm: HomeViewModel = viewModel()
         val importVm: ImportViewModel = viewModel()
         val editorVm: EditorViewModel = viewModel()
+        val updateVm: UpdateViewModel = viewModel()
+
+        // Look for a new GitHub release every time the app opens; the popup appears by itself.
+        LaunchedEffect(Unit) { updateVm.checkOnStart() }
 
         Box(Modifier.fillMaxSize().background(LocalBackgroundBrush.current)) {
             NavHost(
@@ -105,9 +112,10 @@ private fun TimestampRoot() {
                     PreviewScreen(vm = editorVm, onBack = { nav.popBackStack() })
                 }
                 composable(Routes.SETTINGS) {
-                    SettingsScreen(settings = settings, onBack = { nav.popBackStack() })
+                    SettingsScreen(settings = settings, update = updateVm, onBack = { nav.popBackStack() })
                 }
             }
+            UpdateHost(updateVm)
         }
     }
 }

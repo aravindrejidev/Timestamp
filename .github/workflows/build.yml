@@ -1,13 +1,26 @@
-name: Build APK
+name: Build APK (test)
+
+# Quick test build on every push. This APK is signed with a temporary debug key,
+# so it can NOT be installed over a release APK (and the other way round).
+# Real releases: use the "Release APK" workflow.
 
 on:
   push:
     branches: [ main, master ]
+  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +36,11 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
+      - name: Name the APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Timestamp-debug.apk
+
       - uses: actions/upload-artifact@v4
         with:
           name: Timestamp-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: Timestamp-debug.apk
+          retention-days: 14
