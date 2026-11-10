@@ -71,6 +71,7 @@ fun ExportScreen(
     val lines by vm.lines.collectAsStateWithLifecycle()
     val duration by vm.durationMs.collectAsStateWithLifecycle()
     val estimate by vm.estimateWords.collectAsStateWithLifecycle()
+    val singerTags by vm.singerTags.collectAsStateWithLifecycle()
     val folder by settings.exportFolder.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(0) }
     var pendingText by remember { mutableStateOf("") }
@@ -109,15 +110,16 @@ fun ExportScreen(
     val style = TtmlStyle(m.ttmlFontSize, m.ttmlColor, m.ttmlPosition)
     val total = lines.size
     val synced = lines.count { it.startMs >= 0 }
-    val preview = remember(format, m, lines, estimate, duration) {
+    val preview = remember(format, m, lines, estimate, duration, singerTags) {
         LyricsExporter.render(
             format, m.title, m.artist,
             if (duration > 0) duration else m.durationMs,
-            lines, style, estimate
+            lines, style, estimate, singerTags
         )
     }
     val fileName = FileUtils.safeName(m.artist, m.title, format.ext)
     val canExport = synced > 0
+    val hasDuet = lines.any { it.singer == 2 }
 
     Column(
         Modifier
@@ -168,6 +170,48 @@ fun ExportScreen(
                     Switch(
                         checked = estimate,
                         onCheckedChange = { vm.setEstimateWords(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = TsColors.Neon,
+                            checkedBorderColor = TsColors.Neon,
+                            uncheckedThumbColor = TsColors.TextSecondary,
+                            uncheckedTrackColor = TsColors.Chip,
+                            uncheckedBorderColor = TsColors.FieldBorder
+                        )
+                    )
+                }
+            }
+        }
+
+        if (hasDuet && format == ExportFormat.TTML) {
+            Panel(Modifier.fillMaxWidth()) {
+                Text("Two singers", color = TsColors.TextPrimary, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Lines of singer 2 are tagged ttm:agent=\"v2\" and aligned to the right.",
+                    color = TsColors.TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        if (hasDuet && format != ExportFormat.TTML) {
+            Panel(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Add singer tags",
+                            color = TsColors.TextPrimary,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            "Starts each line with v1: or v2:. Only some players understand this; TTML is the safest for duets.",
+                            color = TsColors.TextSecondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Switch(
+                        checked = singerTags,
+                        onCheckedChange = { vm.setSingerTags(it) },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.Black,
                             checkedTrackColor = TsColors.Neon,

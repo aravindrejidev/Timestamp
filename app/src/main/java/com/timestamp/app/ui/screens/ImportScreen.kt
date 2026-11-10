@@ -144,7 +144,11 @@ fun ImportScreen(vm: ImportViewModel, onBack: () -> Unit, onCreated: (Long) -> U
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(6.dp))
-            Text("$lineCount lines", color = TsColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+            Text(
+                "$lineCount lines  ·  Start a line with v2: for a second singer",
+                color = TsColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall
+            )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GhostButton(

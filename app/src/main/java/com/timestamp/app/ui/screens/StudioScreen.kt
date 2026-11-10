@@ -96,6 +96,8 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit, 
     val mode by vm.syncMode.collectAsStateWithLifecycle()
     val canUndo by vm.canUndo.collectAsStateWithLifecycle()
     val error by vm.playerError.collectAsStateWithLifecycle()
+    val duet by vm.duetMode.collectAsStateWithLifecycle()
+    val activeSinger by vm.activeSinger.collectAsStateWithLifecycle()
     val positionState = vm.positionMs.collectAsStateWithLifecycle()
     val playingIndex by remember(lines) { derivedStateOf { currentLineIndex(lines, positionState.value) } }
 
@@ -210,6 +212,15 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit, 
                             Toast.LENGTH_SHORT
                         ).show()
                     }
+                    MenuRow(if (duet) "Duet mode: on" else "Duet mode: off", Icons.Rounded.Group) {
+                        menuOpen = false
+                        vm.setDuetMode(!duet)
+                        Toast.makeText(
+                            context,
+                            if (!duet) "Duet mode on. Tap the number on a line to switch its singer." else "Duet mode off",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
                     MenuRow("Clear all timestamps", Icons.Rounded.RestartAlt) {
                         menuOpen = false
                         vm.clearAllTimestamps()
@@ -257,6 +268,8 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit, 
                     line = line,
                     isCursor = i == cursor,
                     isLast = i == lines.lastIndex,
+                    duet = duet,
+                    onToggleSinger = { vm.toggleSinger(i) },
                     isPlaying = i == playingIndex,
                     wordMode = mode == SyncMode.WORD,
                     onSelect = { vm.selectLine(i) },
@@ -295,6 +308,20 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit, 
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp
                 )
+            }
+            if (duet) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Singer", color = TsColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    TsChip("Auto", activeSinger == 0, { vm.setActiveSinger(0) }, compact = true, modifier = Modifier.width(60.dp))
+                    TsChip("1", activeSinger == 1, { vm.setActiveSinger(1) }, compact = true, modifier = Modifier.width(48.dp))
+                    TsChip("2", activeSinger == 2, { vm.setActiveSinger(2) }, compact = true, modifier = Modifier.width(48.dp))
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        if (activeSinger == 0) "TAP keeps each line's singer" else "TAP sets singer $activeSinger",
+                        color = TsColors.TextSecondary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
             TapButton(
                 title = if (mode == SyncMode.LINE) "TAP TO SYNC LINE" else "TAP TO SYNC WORD",
@@ -474,6 +501,8 @@ private fun LyricRow(
     line: LyricLine,
     isCursor: Boolean,
     isLast: Boolean,
+    duet: Boolean,
+    onToggleSinger: () -> Unit,
     isPlaying: Boolean,
     wordMode: Boolean,
     onSelect: () -> Unit,
@@ -511,7 +540,27 @@ private fun LyricRow(
             )
         }
         Spacer(Modifier.width(10.dp))
-        Text(text, modifier = Modifier.weight(1f), fontSize = 16.sp, lineHeight = 22.sp)
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            fontSize = 16.sp,
+            lineHeight = 22.sp,
+            textAlign = if (duet && line.singer == 2) TextAlign.End else TextAlign.Start
+        )
+        if (duet) {
+            val singerColor = if (line.singer == 2) TsColors.Singer2 else TsColors.Neon
+            Box(
+                Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .border(1.dp, singerColor, CircleShape)
+                    .clickable(onClick = onToggleSinger),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("${line.singer}", color = singerColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(4.dp))
+        }
         Box {
             IconButton(onClick = { menu = true }, modifier = Modifier.size(36.dp)) {
                 Icon(Icons.Rounded.MoreVert, "Line tools", tint = TsColors.TextSecondary)

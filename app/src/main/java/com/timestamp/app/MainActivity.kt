@@ -5,6 +5,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -65,7 +73,15 @@ private fun TimestampRoot() {
             NavHost(
                 navController = nav,
                 startDestination = Routes.HOME,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                enterTransition = {
+                    fadeIn(tween(240)) + slideInHorizontally(tween(280, easing = FastOutSlowInEasing)) { it / 14 }
+                },
+                exitTransition = { fadeOut(tween(160)) },
+                popEnterTransition = { fadeIn(tween(240)) },
+                popExitTransition = {
+                    fadeOut(tween(180)) + slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it / 14 }
+                }
             ) {
                 composable(Routes.HOME) {
                     HomeScreen(
@@ -108,7 +124,18 @@ private fun TimestampRoot() {
                         onPreview = { nav.navigate(Routes.PREVIEW) }
                     )
                 }
-                composable(Routes.PREVIEW) {
+                composable(
+                    Routes.PREVIEW,
+                    // slides up like a sheet, slides down when closed
+                    enterTransition = {
+                        slideInVertically(tween(380, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(250))
+                    },
+                    exitTransition = { fadeOut(tween(200)) },
+                    popEnterTransition = { fadeIn(tween(240)) },
+                    popExitTransition = {
+                        slideOutVertically(tween(320, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(250))
+                    }
+                ) {
                     PreviewScreen(vm = editorVm, onBack = { nav.popBackStack() })
                 }
                 composable(Routes.SETTINGS) {

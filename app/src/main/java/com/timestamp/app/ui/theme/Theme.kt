@@ -23,6 +23,7 @@ object TsColors {
     val Border = Color(0x26FFFFFF)
     val FieldBorder = Color(0x40FFFFFF)
     val Amber = Color(0xFFFFB74D)
+    val Singer2 = Color(0xFF64B5F6)
     val TextPrimary = Color(0xFFF2F2F2)
     val TextSecondary = Color(0xFF9A9AA0)
     val Danger = Color(0xFFFF5252)

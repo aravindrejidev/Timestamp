@@ -99,6 +99,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val _estimateWords = MutableStateFlow(true)
     val estimateWords: StateFlow<Boolean> = _estimateWords.asStateFlow()
 
+    private val _duet = MutableStateFlow(false)
+    /** Duet mode: lines can belong to singer 1 or 2. */
+    val duetMode: StateFlow<Boolean> = _duet.asStateFlow()
+    private val _activeSinger = MutableStateFlow(0)
+    /** 0 = Auto (keep the line's singer), 1 or 2 = TAP assigns that singer. */
+    val activeSinger: StateFlow<Int> = _activeSinger.asStateFlow()
+    private val _singerTags = MutableStateFlow(false)
+    val singerTags: StateFlow<Boolean> = _singerTags.asStateFlow()
+
     private val _preview = MutableStateFlow<PreviewData?>(null)
     val preview: StateFlow<PreviewData?> = _preview.asStateFlow()
 
@@ -163,6 +172,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         nextId = decoded.size.toLong()
         dirty = false
         _lines.value = decoded
+        _duet.value = decoded.any { it.singer == 2 }
+        _activeSinger.value = 0
         _cursor.value = decoded.indexOfFirst { it.startMs < 0 }.let { if (it < 0) 0 else it }
         _mode.value = SyncMode.LINE
         _error.value = null
@@ -292,7 +303,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         ticker = viewModelScope.launch {
             while (isActive) {
                 _position.value = player.currentPosition
-                delay(30)
+                delay(16)
             }
         }
     }
@@ -389,10 +400,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val last = _lines.value.lastIndex
         val i = _cursor.value.coerceIn(0, last)
         mutate { ls ->
-            ls.toMutableList().also { it[i] = ls[i].copy(startMs = t, endMs = -1L, words = emptyList()) }
+            ls.toMutableList().also {
+                it[i] = ls[i].copy(startMs = t, endMs = -1L, words = emptyList(), singer = singerForTap(ls[i]))
+            }
         }
         _cursor.value = (i + 1).coerceAtMost(last)
     }
+
+    private fun singerForTap(line: LyricLine): Int =
+        if (_duet.value && _activeSinger.value != 0) _activeSinger.value else line.singer
 
     private fun tentativeEnd(word: String): Long = (word.length * 90L).coerceIn(250L, 1200L)
 
@@ -411,7 +427,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             ws[wi - 1] = prev.copy(endMs = t.coerceAtLeast(prev.startMs))
         }
         ws[wi] = WordTiming(words[wi].text, t, t + tentativeEnd(words[wi].text))
-        val newLine = line.copy(words = ws, startMs = ws[0].startMs, endMs = ws[wi].endMs)
+        val newLine = line.copy(
+            words = ws,
+            startMs = ws[0].startMs,
+            endMs = ws[wi].endMs,
+            singer = if (wi == 0) singerForTap(line) else line.singer
+        )
 
         mutate { cur ->
             val m = cur.toMutableList()
@@ -484,15 +505,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val wa = l.words.take(na)
                 val wb = l.words.drop(na)
                 lineA = l.copy(text = a, words = wa, endMs = wa.last().endMs)
-                lineB = LyricLine(newId(), b, wb.first().startMs, wb.last().endMs, wb)
+                lineB = LyricLine(newId(), b, wb.first().startMs, wb.last().endMs, wb, l.singer)
             } else if (l.startMs >= 0) {
                 val ratio = a.length.toDouble() / (a.length + b.length)
                 val mid = l.startMs + ((end - l.startMs) * ratio).toLong()
                 lineA = l.copy(text = a, words = emptyList(), endMs = mid)
-                lineB = LyricLine(newId(), b, mid, l.endMs, emptyList())
+                lineB = LyricLine(newId(), b, mid, l.endMs, emptyList(), l.singer)
             } else {
                 lineA = l.copy(text = a, words = emptyList())
-                lineB = LyricLine(newId(), b)
+                lineB = LyricLine(newId(), b, singer = l.singer)
             }
             ls.toMutableList().also {
                 it[i] = lineA
@@ -529,7 +550,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (t.isEmpty()) return
         mutate { ls ->
             val idx = (i + 1).coerceIn(0, ls.size)
-            ls.toMutableList().also { it.add(idx, LyricLine(newId(), t)) }
+            ls.toMutableList().also { it.add(idx, LyricLine(newId(), t, singer = ls.getOrNull(i)?.singer ?: 1)) }
         }
     }
 
@@ -551,6 +572,32 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     /** Shifts every synced line and word by [deltaMs]. */
     fun offsetAll(deltaMs: Long) = mutate { ls ->
         if (deltaMs == 0L) ls else ls.map { if (it.startMs >= 0) it.shifted(deltaMs) else it }
+    }
+
+    // ---------------------------------------------------------------- duet (two singers)
+
+    fun setDuetMode(on: Boolean) {
+        if (!on && _lines.value.any { it.singer != 1 }) {
+            mutate { ls -> ls.map { it.copy(singer = 1) } }
+        }
+        _duet.value = on
+        if (!on) _activeSinger.value = 0
+    }
+
+    fun setActiveSinger(value: Int) {
+        _activeSinger.value = value.coerceIn(0, 2)
+    }
+
+    fun toggleSinger(i: Int) {
+        _duet.value = true
+        mutate { ls ->
+            if (i !in ls.indices) ls
+            else ls.toMutableList().also { it[i] = ls[i].copy(singer = if (ls[i].singer == 2) 1 else 2) }
+        }
+    }
+
+    fun setSingerTags(value: Boolean) {
+        _singerTags.value = value
     }
 
     /** Fills in word timings for synced lines that were only line-synced. Returns how many lines changed. */

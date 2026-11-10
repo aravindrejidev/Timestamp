@@ -16,7 +16,9 @@ data class LyricLine(
     val startMs: Long = -1L,
     /** -1 means "auto": ends where the next synced line starts. */
     val endMs: Long = -1L,
-    val words: List<WordTiming> = emptyList()
+    val words: List<WordTiming> = emptyList(),
+    /** 1 or 2: which singer sings the line (duets). */
+    val singer: Int = 1
 ) {
     val isSynced: Boolean get() = startMs >= 0
 
@@ -48,6 +50,7 @@ object LyricsJson {
                     .put("s", l.startMs)
                     .put("e", l.endMs)
                     .put("w", words)
+                    .put("g", l.singer)
             )
         }
         return arr.toString()
@@ -62,7 +65,7 @@ object LyricsJson {
                 val w = wa.getJSONObject(j)
                 WordTiming(w.getString("t"), w.optLong("s", -1L), w.optLong("e", -1L))
             }
-            LyricLine(i.toLong(), o.getString("t"), o.optLong("s", -1L), o.optLong("e", -1L), words)
+            LyricLine(i.toLong(), o.getString("t"), o.optLong("s", -1L), o.optLong("e", -1L), words, o.optInt("g", 1))
         }
     }
 }

@@ -86,6 +86,7 @@ object LyricsParser {
     private val leadingTime = Regex("^\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?\\]")
     private val metaTag = Regex("^\\[[A-Za-z]{2,}:.*\\]\\s*$")
     private val wordTag = Regex("<(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?>")
+    private val singerPrefix = Regex("^(?:v([12])\\s*:|\\[v([12])\\])\\s*", RegexOption.IGNORE_CASE)
 
     private fun toMs(min: String, sec: String, frac: String): Long {
         val f = if (frac.isEmpty()) 0L else frac.padEnd(3, '0').take(3).toLong()
@@ -104,16 +105,22 @@ object LyricsParser {
                 times.add(toMs(m.groupValues[1], m.groupValues[2], m.groupValues[3]))
                 line = line.substring(m.value.length)
             }
+            var singer = 1
+            val sm = singerPrefix.find(line)
+            if (sm != null) {
+                singer = (sm.groupValues[1].ifEmpty { sm.groupValues[2] }).toIntOrNull() ?: 1
+                line = line.substring(sm.value.length)
+            }
             if (times.isEmpty()) {
-                out.add(LyricLine(0, line))
+                out.add(LyricLine(0, line, singer = singer))
                 continue
             }
             val (text, words) = parseWords(line)
             if (text.isBlank()) continue
             if (words.isNotEmpty()) {
-                out.add(LyricLine(0, text, times.first(), words.last().endMs, words))
+                out.add(LyricLine(0, text, times.first(), words.last().endMs, words, singer))
             } else {
-                times.forEach { out.add(LyricLine(0, text, it)) }
+                times.forEach { out.add(LyricLine(0, text, it, singer = singer)) }
             }
         }
         return out.mapIndexed { i, l -> l.copy(id = i.toLong()) }
@@ -148,12 +155,13 @@ object LyricsExporter {
         durationMs: Long,
         lines: List<LyricLine>,
         style: TtmlStyle,
-        estimateWords: Boolean
+        estimateWords: Boolean,
+        singerTags: Boolean = false
     ): String {
         val synced = lines.filter { it.startMs >= 0 && it.text.isNotBlank() }.sortedBy { it.startMs }
         return when (format) {
-            ExportFormat.LRC -> toLrc(title, artist, durationMs, synced)
-            ExportFormat.ELARC -> toElarc(title, artist, durationMs, synced, estimateWords)
+            ExportFormat.LRC -> toLrc(title, artist, durationMs, synced, singerTags)
+            ExportFormat.ELARC -> toElarc(title, artist, durationMs, synced, estimateWords, singerTags)
             ExportFormat.TTML -> toTtml(title, artist, synced, style, estimateWords)
         }
     }
@@ -165,11 +173,18 @@ object LyricsExporter {
         sb.append("[by:Timestamp]\n")
     }
 
-    private fun toLrc(title: String, artist: String, durationMs: Long, synced: List<LyricLine>): String {
+    private fun singerTag(l: LyricLine, on: Boolean): String =
+        if (on) "v${l.singer.coerceIn(1, 2)}: " else ""
+
+    private fun toLrc(
+        title: String, artist: String, durationMs: Long,
+        synced: List<LyricLine>, singerTags: Boolean
+    ): String {
         val sb = StringBuilder()
         header(sb, title, artist, durationMs)
         synced.forEach { l ->
-            sb.append('[').append(TimeFmt.lrc(l.startMs)).append(']').append(l.text.trim()).append('\n')
+            sb.append('[').append(TimeFmt.lrc(l.startMs)).append(']')
+                .append(singerTag(l, singerTags)).append(l.text.trim()).append('\n')
         }
         return sb.toString()
     }
@@ -177,13 +192,13 @@ object LyricsExporter {
     /** Enhanced LRC: [mm:ss.xx]<mm:ss.xx>word <mm:ss.xx>word <mm:ss.xx>  (last tag = end of line). */
     private fun toElarc(
         title: String, artist: String, durationMs: Long,
-        synced: List<LyricLine>, estimate: Boolean
+        synced: List<LyricLine>, estimate: Boolean, singerTags: Boolean
     ): String {
         val sb = StringBuilder()
         header(sb, title, artist, durationMs)
         synced.forEachIndexed { i, l ->
             val words = wordsFor(synced, i, estimate)
-            sb.append('[').append(TimeFmt.lrc(l.startMs)).append(']')
+            sb.append('[').append(TimeFmt.lrc(l.startMs)).append(']').append(singerTag(l, singerTags))
             if (words.isEmpty()) {
                 sb.append(l.text.trim())
             } else {
@@ -202,10 +217,15 @@ object LyricsExporter {
         .replace("\"", "&quot;")
         .replace("'", "&apos;")
 
+    /**
+     * TTML. With two singers each line carries ttm:agent="v1" / "v2" (declared in the head),
+     * and singer 2 lines are right-aligned, like duets in Apple Music.
+     */
     private fun toTtml(
         title: String, artist: String,
         synced: List<LyricLine>, style: TtmlStyle, estimate: Boolean
     ): String {
+        val duet = synced.any { it.singer == 2 }
         val (origin, extent, align) = when (style.position) {
             "top" -> Triple("10% 6%", "80% 22%", "before")
             "center" -> Triple("10% 39%", "80% 22%", "center")
@@ -219,18 +239,26 @@ object LyricsExporter {
         sb.append("  <head>\n    <metadata>\n")
         if (title.isNotBlank()) sb.append("      <ttm:title>").append(esc(title.trim())).append("</ttm:title>\n")
         if (artist.isNotBlank()) sb.append("      <ttm:desc>").append(esc(artist.trim())).append("</ttm:desc>\n")
+        if (duet) {
+            sb.append("      <ttm:agent type=\"person\" xml:id=\"v1\"><ttm:name type=\"full\">Singer 1</ttm:name></ttm:agent>\n")
+            sb.append("      <ttm:agent type=\"person\" xml:id=\"v2\"><ttm:name type=\"full\">Singer 2</ttm:name></ttm:agent>\n")
+        }
         sb.append("    </metadata>\n    <styling>\n")
         sb.append("      <style xml:id=\"s1\" tts:fontSize=\"${style.fontSizePx}px\" tts:color=\"${style.colorHex}\" ")
         sb.append("tts:fontFamily=\"sansSerif\" tts:textAlign=\"center\"/>\n")
+        if (duet) sb.append("      <style xml:id=\"s2\" style=\"s1\" tts:textAlign=\"end\"/>\n")
         sb.append("    </styling>\n    <layout>\n")
         sb.append("      <region xml:id=\"r1\" tts:origin=\"$origin\" tts:extent=\"$extent\" tts:displayAlign=\"$align\"/>\n")
         sb.append("    </layout>\n  </head>\n  <body>\n    <div>\n")
         synced.forEachIndexed { i, l ->
             val end = effectiveEnd(synced, i)
             val words = wordsFor(synced, i, estimate)
+            val styleId = if (duet && l.singer == 2) "s2" else "s1"
             sb.append("      <p begin=\"").append(TimeFmt.ttml(l.startMs))
                 .append("\" end=\"").append(TimeFmt.ttml(end))
-                .append("\" region=\"r1\" style=\"s1\">")
+                .append("\" region=\"r1\" style=\"").append(styleId).append('"')
+            if (duet) sb.append(" ttm:agent=\"v").append(l.singer.coerceIn(1, 2)).append('"')
+            sb.append('>')
             if (words.isEmpty()) {
                 sb.append(esc(l.text.trim()))
             } else {
@@ -289,8 +317,11 @@ object TtmlParser {
         return Math.round((hours * 3600.0 + mins * 60.0 + secs) * 1000.0)
     }
 
+    private val agentTag = Regex("<ttm:agent\\b[^>]*>", RegexOption.IGNORE_CASE)
+
     fun parse(xml: String): List<LyricLine> {
         val out = ArrayList<LyricLine>()
+        val agents = agentTag.findAll(xml).mapNotNull { attr(it.value, "xml:id") }.toList()
         for (m in pTag.findAll(xml)) {
             val attrs = m.groupValues[1]
             val inner = m.groupValues[2]
@@ -308,7 +339,13 @@ object TtmlParser {
                 unescape(anyTag.replace(inner, "")).trim()
             }
             if (text.isBlank()) continue
-            out.add(LyricLine(0, text, start, end, words))
+            val agent = attr(attrs, "ttm:agent")
+            val singer = when {
+                agent == null -> 1
+                agents.indexOf(agent) >= 0 -> minOf(agents.indexOf(agent) + 1, 2)
+                else -> if (Regex("(\\d+)$").find(agent)?.value?.toIntOrNull() == 2) 2 else 1
+            }
+            out.add(LyricLine(0, text, start, end, words, singer))
         }
         return out.mapIndexed { i, l -> l.copy(id = i.toLong()) }
     }

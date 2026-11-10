@@ -3,12 +3,19 @@ package com.timestamp.app.ui.screens
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -46,12 +53,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -215,7 +225,8 @@ fun PreviewScreen(vm: EditorViewModel, onBack: () -> Unit) {
     DisposableEffect(Unit) { onDispose { vm.pause() } }
 
     val p = preview
-    val tint = coverTint?.let { lerp(it, Color.Black, 0.45f) } ?: Color(0xFF2A3A33)
+    val tintTarget = coverTint?.let { lerp(it, Color.Black, 0.45f) } ?: Color(0xFF2A3A33)
+    val tint by animateColorAsState(tintTarget, tween(900), label = "previewTint")
     val background = Brush.verticalGradient(listOf(tint, lerp(tint, Color.Black, 0.72f), Color.Black))
 
     Box(Modifier.fillMaxSize().background(background)) {
@@ -407,13 +418,25 @@ private fun LyricsList(
             }
         }
     }
+    var viewportHeight by remember { mutableIntStateOf(0) }
+    val bottomPadding = with(LocalDensity.current) { (viewportHeight * 0.78f).toDp() }
+
     LaunchedEffect(focus) {
-        if (focus >= 0) listState.animateScrollToItem((focus - 1).coerceAtLeast(0))
+        if (focus < 0) return@LaunchedEffect
+        if (listState.layoutInfo.visibleItemsInfo.none { it.index == focus }) {
+            listState.scrollToItem(focus)
+            withFrameNanos { }
+        }
+        val info = listState.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == focus } ?: return@LaunchedEffect
+        val delta = item.offset - info.viewportSize.height * 0.2f
+        if (abs(delta) > 2f) listState.animateScrollBy(delta, tween(650, easing = FastOutSlowInEasing))
     }
 
     LazyColumn(
         state = listState,
         modifier = modifier
+            .onSizeChanged { viewportHeight = it.height }
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             .drawWithContent {
                 drawContent()
@@ -429,7 +452,7 @@ private fun LyricsList(
                     blendMode = BlendMode.DstIn
                 )
             },
-        contentPadding = PaddingValues(top = 12.dp, bottom = 220.dp)
+        contentPadding = PaddingValues(top = 12.dp, bottom = bottomPadding)
     ) {
         if (entries.isEmpty()) {
             item {
@@ -463,42 +486,79 @@ private fun LyricsList(
 
 @Composable
 private fun LyricItem(line: LyricLine, focused: Boolean, distance: Int, pos: Long, onClick: () -> Unit) {
-    val focusAmt by animateFloatAsState(if (focused) 1f else 0f, tween(350), label = "lyricFocus")
-    val blurTarget = if (focused) 0f else (distance * 1.5f).coerceIn(2f, 6f)
-    val blurDp by animateDpAsState(blurTarget.dp, tween(350), label = "lyricBlur")
-    Text(
-        lyricText(line, focused, pos, focusAmt),
-        fontSize = 32.sp,
-        lineHeight = 38.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = (-0.5).sp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .blur(blurDp, BlurredEdgeTreatment.Unbounded)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 24.dp, vertical = 12.dp)
+    val right = line.singer == 2
+    val focusAmt by animateFloatAsState(
+        if (focused) 1f else 0f, tween(450, easing = FastOutSlowInEasing), label = "lyricFocus"
     )
+    val blurTarget = if (focused) 0f else (distance * 1.5f).coerceIn(2f, 6f)
+    val blurDp by animateDpAsState(blurTarget.dp, tween(450, easing = FastOutSlowInEasing), label = "lyricBlur")
+    Box(
+        Modifier.fillMaxWidth(),
+        contentAlignment = if (right) Alignment.CenterEnd else Alignment.CenterStart
+    ) {
+        Text(
+            lyricText(line, focused, pos, focusAmt),
+            fontSize = 32.sp,
+            lineHeight = 38.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = (-0.5).sp,
+            textAlign = if (right) TextAlign.End else TextAlign.Start,
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .graphicsLayer {
+                    val sc = 0.94f + 0.06f * focusAmt
+                    scaleX = sc
+                    scaleY = sc
+                    transformOrigin = TransformOrigin(if (right) 1f else 0f, 0.5f)
+                }
+                .blur(blurDp, BlurredEdgeTreatment.Unbounded)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 24.dp, vertical = 12.dp)
+        )
+    }
 }
 
 @Composable
 private fun BreakDots(active: Boolean, progress: Float) {
-    val height by animateDpAsState(if (active) 56.dp else 0.dp, tween(300), label = "dotsHeight")
-    Row(
+    val height by animateDpAsState(if (active) 56.dp else 0.dp, tween(400, easing = FastOutSlowInEasing), label = "dotsHeight")
+    val shown by animateFloatAsState(if (active) 1f else 0f, tween(350), label = "dotsShown")
+    Box(
         Modifier.fillMaxWidth().height(height).padding(horizontal = 24.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        contentAlignment = Alignment.CenterStart
     ) {
-        if (height > 8.dp) {
-            repeat(3) { i ->
-                val lit = progress > (i + 0.5f) / 3f
-                val alpha by animateFloatAsState(if (lit) 0.95f else 0.3f, tween(250), label = "dot$i")
-                Box(
-                    Modifier
-                        .size(14.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = alpha))
-                )
-            }
+        if (height > 6.dp) BreathingDots(progress, shown)
+    }
+}
+
+/** Three dots that slowly breathe (grow and shrink) while they fill up towards the next line. */
+@Composable
+private fun BreathingDots(progress: Float, shown: Float) {
+    val transition = rememberInfiniteTransition(label = "breathing")
+    val breath by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1700, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "breath"
+    )
+    Row(
+        Modifier.graphicsLayer {
+            val sc = (0.86f + 0.26f * breath) * (0.6f + 0.4f * shown)
+            scaleX = sc
+            scaleY = sc
+            alpha = shown
+            transformOrigin = TransformOrigin(0f, 0.5f)
+        },
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(3) { i ->
+            val fill = (progress * 3f - i).coerceIn(0f, 1f)
+            Box(
+                Modifier
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.3f + 0.65f * fill))
+            )
         }
     }
 }
@@ -532,12 +592,25 @@ private fun PlayerControls(vm: EditorViewModel) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             BareIconButton(Icons.Rounded.FastRewind, 44, "Back 5 seconds") { vm.seekBy(-5000) }
-            BareIconButton(
-                if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                64,
-                if (playing) "Pause" else "Play"
-            ) { vm.togglePlay() }
+            PlayPauseButton(playing) { vm.togglePlay() }
             BareIconButton(Icons.Rounded.FastForward, 44, "Forward 5 seconds") { vm.seekBy(5000) }
+        }
+    }
+}
+
+@Composable
+private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.size(80.dp).clip(CircleShape).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Crossfade(targetState = playing, animationSpec = tween(180), label = "playPause") { isPlaying ->
+            Icon(
+                if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                if (isPlaying) "Pause" else "Play",
+                tint = Color.White,
+                modifier = Modifier.size(64.dp)
+            )
         }
     }
 }
