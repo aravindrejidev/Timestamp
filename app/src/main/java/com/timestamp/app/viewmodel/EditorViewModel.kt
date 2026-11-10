@@ -62,7 +62,9 @@ data class PreviewData(
     val label: String,
     val format: String,
     val lines: List<LyricLine>,
-    val report: PreviewReport
+    val report: PreviewReport,
+    /** True when singer 2 sides were taken from the project because the file itself has no singer info. */
+    val singersFromProject: Boolean = false
 )
 
 @OptIn(FlowPreview::class)
@@ -625,13 +627,29 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun setPreview(text: String, label: String) {
         val parsed = PreviewParser.parse(text)
+        val project = _lines.value
+        var parsedLines = parsed.lines
+        var fromProject = false
+        // LRC / ELARC files normally carry no singer info: take the singer of each line from the project.
+        if (parsedLines.none { it.singer == 2 } && project.any { it.singer == 2 }) {
+            parsedLines = parsedLines.map { l ->
+                val key = splitWords(l.text).joinToString(" ")
+                val sameLine = project.any { pl ->
+                    pl.singer == 2 && pl.startMs >= 0 &&
+                        kotlin.math.abs(pl.startMs - l.startMs) <= 30L &&
+                        splitWords(pl.text).joinToString(" ") == key
+                }
+                if (sameLine) l.copy(singer = 2) else l
+            }
+            fromProject = parsedLines.any { it.singer == 2 }
+        }
         val dur = if (_duration.value > 0) _duration.value else (_meta.value?.durationMs ?: 0L)
-        val report = buildReport(parsed.lines, dur)
-        val shown = parsed.lines
+        val report = buildReport(parsedLines, dur)
+        val shown = parsedLines
             .filter { it.startMs >= 0 }
             .sortedBy { it.startMs }
             .mapIndexed { i, l -> l.copy(id = i.toLong()) }
-        _preview.value = PreviewData(label, parsed.format, shown, report)
+        _preview.value = PreviewData(label, parsed.format, shown, report, fromProject)
         player.pause()
         seekTo(0L)
     }

@@ -82,6 +82,7 @@ import com.timestamp.app.ui.components.TsDialog
 import com.timestamp.app.ui.theme.TsColors
 import com.timestamp.app.util.FileUtils
 import com.timestamp.app.viewmodel.EditorViewModel
+import com.timestamp.app.viewmodel.PreviewData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,7 +92,8 @@ import kotlin.math.abs
 
 private data class CheckItem(val level: Int, val text: String) // 0 ok, 1 warning, 2 problem
 
-private fun buildChecks(r: PreviewReport, projectLines: Int): List<CheckItem> {
+private fun buildChecks(p: PreviewData, projectLines: Int): List<CheckItem> {
+    val r = p.report
     val out = ArrayList<CheckItem>()
     if (r.synced == 0) {
         out.add(CheckItem(2, "No timestamps found in this file."))
@@ -121,6 +123,20 @@ private fun buildChecks(r: PreviewReport, projectLines: Int): List<CheckItem> {
     if (r.beyondAudio > 0) out.add(CheckItem(2, "${r.beyondAudio} lines start after the audio ends."))
     if (r.longGaps > 0) out.add(CheckItem(1, "${r.longGaps} gaps longer than 15 s (instrumental?)."))
     if (r.unsynced > 0) out.add(CheckItem(1, "${r.unsynced} lines in the file have no timestamp."))
+    val right = p.lines.count { it.singer == 2 }
+    if (right > 0) {
+        out.add(
+            if (p.singersFromProject) {
+                CheckItem(
+                    1,
+                    "$right lines are shown on the right (singer 2) from your project. " +
+                        "This file has no singer tags itself; TTML keeps them."
+                )
+            } else {
+                CheckItem(0, "Two singers: $right lines for singer 2 appear on the right.")
+            }
+        )
+    }
     return out
 }
 
@@ -248,7 +264,7 @@ fun PreviewScreen(vm: EditorViewModel, onBack: () -> Unit) {
 
             // header: cover, title, artist, buttons
             val checks = remember(p, projectLines.size) {
-                if (p == null) emptyList() else buildChecks(p.report, projectLines.size)
+                if (p == null) emptyList() else buildChecks(p, projectLines.size)
             }
             val worst = checks.maxOfOrNull { it.level } ?: 0
             Row(
@@ -343,7 +359,7 @@ fun PreviewScreen(vm: EditorViewModel, onBack: () -> Unit) {
     }
 
     if (checksOpen && p != null) {
-        val checks = buildChecks(p.report, projectLines.size)
+        val checks = buildChecks(p, projectLines.size)
         TsDialog(title = "Checks", onDismiss = { checksOpen = false }, confirmText = null) {
             checks.forEach { c ->
                 Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
@@ -505,7 +521,7 @@ private fun LyricItem(line: LyricLine, focused: Boolean, distance: Int, pos: Lon
             letterSpacing = (-0.5).sp,
             textAlign = if (right) TextAlign.End else TextAlign.Start,
             modifier = Modifier
-                .fillMaxWidth(0.9f)
+                .fillMaxWidth(0.86f)
                 .graphicsLayer {
                     val sc = 0.94f + 0.06f * focusAmt
                     scaleX = sc

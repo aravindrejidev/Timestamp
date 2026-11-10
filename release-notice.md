@@ -1,6 +1,6 @@
 # What's new
 
-- Duets: mark lines for singer 1 or singer 2. TTML export now tags each line with its singer, and the second singer's lines appear on the right side
-- Preview: the three dots in instrumental parts now breathe while they fill up
-- Smoother Preview: lyrics glide to the current line, softer focus and blur changes, nicer screen transitions
-- Start a line with v2: when importing lyrics to give it to the second singer
+- Duets in Preview, like Apple Music: the first singer's lines come from the left, the second singer's lines from the right
+- Works for LRC, ELARC and TTML previews, and the checks tell you whether the file itself carries the singers
+- Duet export in TTML, with each line tagged by its singer
+- Smoother Preview and a breathing animation on the instrumental dots
