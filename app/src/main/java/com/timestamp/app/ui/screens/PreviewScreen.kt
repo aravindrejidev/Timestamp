@@ -5,12 +5,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -19,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -49,13 +53,18 @@ import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -65,7 +74,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,6 +95,8 @@ import com.timestamp.app.util.FileUtils
 import com.timestamp.app.viewmodel.EditorViewModel
 import com.timestamp.app.viewmodel.PreviewData
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -185,27 +198,78 @@ private fun buildEntries(lines: List<LyricLine>): List<PreviewEntry> {
     return out
 }
 
-private fun lyricText(line: LyricLine, focused: Boolean, pos: Long, focusAmt: Float): AnnotatedString =
-    buildAnnotatedString {
-        if (line.words.isNotEmpty()) {
-            line.words.forEachIndexed { i, w ->
-                val f = if (focused) {
-                    val dur = (w.endMs - w.startMs).coerceAtLeast(1L)
-                    when {
-                        pos >= w.endMs -> 1f
-                        pos <= w.startMs -> 0f
-                        else -> (pos - w.startMs).toFloat() / dur
-                    }
-                } else {
-                    focusAmt
-                }
-                withStyle(SpanStyle(color = lerp(Dim, Color.White, f))) { append(w.text) }
-                if (i < line.words.lastIndex) append(" ")
-            }
+private val LyricFontSize = 32.sp
+
+/** Character range of every word inside the text a word-synced line is drawn with (words joined by one space). */
+private fun wordSpans(line: LyricLine): List<IntRange> {
+    var offset = 0
+    return line.words.map { w ->
+        val r = offset until offset + w.text.length
+        offset += w.text.length + 1
+        r
+    }
+}
+
+/**
+ * Apple Music style word reveal. The line is already drawn dim underneath; this paints the
+ * white "sung" part on top:
+ *  - a word that is finished is fully white,
+ *  - the word being sung is revealed from left to right by a moving gradient with a soft edge
+ *    (the letters are not brightened all at once),
+ *  - a word that has not started stays dim.
+ * [strength] (0..1) fades the whole white layer in and out when the line gains or loses focus.
+ */
+private fun DrawScope.drawWordWipe(
+    layout: TextLayoutResult,
+    line: LyricLine,
+    spans: List<IntRange>,
+    posMs: Long,
+    strength: Float,
+    featherPx: Float
+) {
+    val textLength = layout.layoutInput.text.length
+    val white = Color.White.copy(alpha = strength)
+    val pad = 2.dp.toPx()
+    val sung = Path()
+    var anySung = false
+    val partial = ArrayList<Pair<Rect, Float>>()
+
+    for (i in line.words.indices) {
+        val span = spans.getOrNull(i) ?: continue
+        if (span.isEmpty() || span.last >= textLength) continue
+        val w = line.words[i]
+        val a = layout.getBoundingBox(span.first)
+        val b = layout.getBoundingBox(span.last)
+        val rect = if (b.right > a.left) {
+            Rect(a.left - pad, minOf(a.top, b.top), b.right + pad, maxOf(a.bottom, b.bottom))
         } else {
-            withStyle(SpanStyle(color = lerp(Dim, Color.White, focusAmt))) { append(line.text) }
+            // a very long word that wraps onto the next row: use the full width of those rows
+            Rect(0f, minOf(a.top, b.top), layout.size.width.toFloat(), maxOf(a.bottom, b.bottom))
+        }
+        val dur = (w.endMs - w.startMs).coerceAtLeast(1L)
+        val f = ((posMs - w.startMs).toFloat() / dur).coerceIn(0f, 1f)
+        if (f >= 1f) {
+            sung.addRect(rect)
+            anySung = true
+        } else if (f > 0f) {
+            partial.add(rect to f)
         }
     }
+
+    if (anySung) {
+        clipPath(sung) { drawText(layout, color = white) }
+    }
+    for ((rect, f) in partial) {
+        // The soft edge travels from before the first letter to past the last letter.
+        val edge = rect.left + f * (rect.width + featherPx)
+        val brush = Brush.horizontalGradient(
+            colorStops = arrayOf(0f to white, 1f to white.copy(alpha = 0f)),
+            startX = edge - featherPx,
+            endX = edge
+        )
+        clipRect(rect.left, rect.top, rect.right, rect.bottom) { drawText(layout, brush = brush) }
+    }
+}
 
 // ------------------------------------------------------------------ screen
 
@@ -438,16 +502,56 @@ private fun LyricsList(
     var viewportHeight by remember { mutableIntStateOf(0) }
     val bottomPadding = with(LocalDensity.current) { (viewportHeight * 0.78f).toDp() }
 
+    // Every row can be pushed a little (translationY) while the list moves. Rows below the new
+    // line start a moment later than the rows above it, so they follow one after another,
+    // like the scrolling in Apple Music.
+    val shifts = remember(entries) { HashMap<String, Animatable<Float, AnimationVector1D>>() }
+    fun shiftOf(key: String): Animatable<Float, AnimationVector1D> = shifts.getOrPut(key) { Animatable(0f) }
+
     LaunchedEffect(focus) {
-        if (focus < 0) return@LaunchedEffect
-        if (listState.layoutInfo.visibleItemsInfo.none { it.index == focus }) {
-            listState.scrollToItem(focus)
+        val target = focus
+        if (target < 0) return@LaunchedEffect
+        if (listState.layoutInfo.visibleItemsInfo.none { it.index == target }) {
+            // far away (a seek): jump next to the line first, every row starts from rest
+            listState.scrollToItem(target)
             withFrameNanos { }
+            for (a in shifts.values.toList()) a.snapTo(0f)
         }
         val info = listState.layoutInfo
-        val item = info.visibleItemsInfo.firstOrNull { it.index == focus } ?: return@LaunchedEffect
-        val delta = item.offset - info.viewportSize.height * 0.2f
-        if (abs(delta) > 2f) listState.animateScrollBy(delta, tween(650, easing = FastOutSlowInEasing))
+        val item = info.visibleItemsInfo.firstOrNull { it.index == target } ?: return@LaunchedEffect
+        val viewport = info.viewportSize.height
+        val delta = item.offset - viewport * 0.2f
+        if (abs(delta) <= 2f) return@LaunchedEffect
+
+        if (abs(delta) > viewport * 0.5f) {
+            // a long move: everything glides together
+            for (a in shifts.values.toList()) a.snapTo(0f)
+            listState.animateScrollBy(delta, tween(650, easing = FastOutSlowInEasing))
+            return@LaunchedEffect
+        }
+
+        val visible = info.visibleItemsInfo
+        val from = ((visible.firstOrNull()?.index ?: target) - 3).coerceAtLeast(0)
+        val to = ((visible.lastOrNull()?.index ?: target) + 6).coerceAtMost(entries.lastIndex)
+
+        // 1) move the list at once, 2) push every row back by the same distance so nothing seems
+        // to move yet, 3) let each row slide into place, later and later the further below it is.
+        val moved = listState.scrollBy(delta)
+        if (abs(moved) < 1f) return@LaunchedEffect
+        for (i in from..to) {
+            val a = shiftOf(entries[i].key)
+            a.snapTo(a.value + moved)
+        }
+        coroutineScope {
+            for (i in from..to) {
+                val a = shiftOf(entries[i].key)
+                val rank = (i - target).coerceIn(0, 7)
+                launch {
+                    if (rank > 0) delay(rank * 45L)
+                    a.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 80f))
+                }
+            }
+        }
     }
 
     LazyColumn(
@@ -483,18 +587,20 @@ private fun LyricsList(
         }
         itemsIndexed(entries, key = { _, e -> e.key }) { idx, e ->
             val focused = idx == focus
+            val shift = shiftOf(e.key)
             when (e) {
                 is PreviewEntry.Lyric -> LyricItem(
                     line = e.line,
                     focused = focused,
                     distance = if (focus >= 0) abs(idx - focus) else 2,
-                    pos = if (focused) posState.value else 0L,
+                    posState = posState,
+                    shift = { shift.value },
                     onClick = { onSeek(e.line.startMs) }
                 )
                 is PreviewEntry.Break -> {
                     val span = (e.end - e.start).coerceAtLeast(1L)
                     val progress = if (focused) ((posState.value - e.start).toFloat() / span) else 0f
-                    BreakDots(active = focused, progress = progress.coerceIn(0f, 1f))
+                    BreakDots(active = focused, progress = progress.coerceIn(0f, 1f), shift = { shift.value })
                 }
             }
         }
@@ -502,28 +608,58 @@ private fun LyricsList(
 }
 
 @Composable
-private fun LyricItem(line: LyricLine, focused: Boolean, distance: Int, pos: Long, onClick: () -> Unit) {
+private fun LyricItem(
+    line: LyricLine,
+    focused: Boolean,
+    distance: Int,
+    posState: State<Long>,
+    shift: () -> Float,
+    onClick: () -> Unit
+) {
     val right = line.singer == 2
-    val focusAmt by animateFloatAsState(
+    val focusState = animateFloatAsState(
         if (focused) 1f else 0f, tween(450, easing = FastOutSlowInEasing), label = "lyricFocus"
     )
     val blurTarget = if (focused) 0f else (distance * 1.5f).coerceIn(2f, 6f)
     val blurDp by animateDpAsState(blurTarget.dp, tween(450, easing = FastOutSlowInEasing), label = "lyricBlur")
+
+    // Word timing in the file: each word is revealed by a soft left-to-right wipe, like Apple Music.
+    // Only line timing: the whole line fades up to white, which is what Apple Music does for such lyrics.
+    val wordSynced = line.words.isNotEmpty() && line.words.all { it.startMs >= 0 }
+    val shownText = if (wordSynced) line.words.joinToString(" ") { it.text } else line.text
+    val spans = remember(line) { if (wordSynced) wordSpans(line) else emptyList() }
+    var layout by remember(shownText) { mutableStateOf<TextLayoutResult?>(null) }
+
+    val wipe = if (wordSynced) {
+        Modifier.drawWithContent {
+            drawContent()
+            val strength = focusState.value
+            val tl = layout
+            if (strength > 0.001f && tl != null) {
+                drawWordWipe(tl, line, spans, posState.value, strength, 0.5f * LyricFontSize.toPx())
+            }
+        }
+    } else {
+        Modifier
+    }
+
     Box(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().graphicsLayer { translationY = shift() },
         contentAlignment = if (right) Alignment.CenterEnd else Alignment.CenterStart
     ) {
         Text(
-            lyricText(line, focused, pos, focusAmt),
-            fontSize = 32.sp,
+            shownText,
+            color = if (wordSynced) Dim else lerp(Dim, Color.White, focusState.value),
+            fontSize = LyricFontSize,
             lineHeight = 38.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = (-0.5).sp,
             textAlign = if (right) TextAlign.End else TextAlign.Start,
+            onTextLayout = { layout = it },
             modifier = Modifier
                 .fillMaxWidth(0.86f)
                 .graphicsLayer {
-                    val sc = 0.94f + 0.06f * focusAmt
+                    val sc = 0.94f + 0.06f * focusState.value
                     scaleX = sc
                     scaleY = sc
                     transformOrigin = TransformOrigin(if (right) 1f else 0f, 0.5f)
@@ -531,16 +667,17 @@ private fun LyricItem(line: LyricLine, focused: Boolean, distance: Int, pos: Lon
                 .blur(blurDp, BlurredEdgeTreatment.Unbounded)
                 .clickable(onClick = onClick)
                 .padding(horizontal = 24.dp, vertical = 12.dp)
+                .then(wipe)
         )
     }
 }
 
 @Composable
-private fun BreakDots(active: Boolean, progress: Float) {
+private fun BreakDots(active: Boolean, progress: Float, shift: () -> Float) {
     val height by animateDpAsState(if (active) 56.dp else 0.dp, tween(400, easing = FastOutSlowInEasing), label = "dotsHeight")
     val shown by animateFloatAsState(if (active) 1f else 0f, tween(350), label = "dotsShown")
     Box(
-        Modifier.fillMaxWidth().height(height).padding(horizontal = 24.dp),
+        Modifier.fillMaxWidth().graphicsLayer { translationY = shift() }.height(height).padding(horizontal = 24.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         if (height > 6.dp) BreathingDots(progress, shown)
