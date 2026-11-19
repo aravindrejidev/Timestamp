@@ -3,8 +3,13 @@ package com.timestamp.app.ui.screens
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -81,13 +86,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.timestamp.app.data.BgVocal
 import com.timestamp.app.data.LyricLine
+import com.timestamp.app.data.WordTiming
 import com.timestamp.app.format.PreviewReport
 import com.timestamp.app.format.TimeFmt
 import com.timestamp.app.format.currentLineIndex
+import com.timestamp.app.format.distributeWords
 import com.timestamp.app.ui.components.GhostButton
 import com.timestamp.app.ui.components.TsDialog
 import com.timestamp.app.ui.theme.TsColors
@@ -201,9 +210,9 @@ private fun buildEntries(lines: List<LyricLine>): List<PreviewEntry> {
 private val LyricFontSize = 32.sp
 
 /** Character range of every word inside the text a word-synced line is drawn with (words joined by one space). */
-private fun wordSpans(line: LyricLine): List<IntRange> {
+private fun wordSpans(words: List<WordTiming>): List<IntRange> {
     var offset = 0
-    return line.words.map { w ->
+    return words.map { w ->
         val r = offset until offset + w.text.length
         offset += w.text.length + 1
         r
@@ -221,7 +230,7 @@ private fun wordSpans(line: LyricLine): List<IntRange> {
  */
 private fun DrawScope.drawWordWipe(
     layout: TextLayoutResult,
-    line: LyricLine,
+    words: List<WordTiming>,
     spans: List<IntRange>,
     posMs: Long,
     strength: Float,
@@ -234,10 +243,10 @@ private fun DrawScope.drawWordWipe(
     var anySung = false
     val partial = ArrayList<Pair<Rect, Float>>()
 
-    for (i in line.words.indices) {
+    for (i in words.indices) {
         val span = spans.getOrNull(i) ?: continue
         if (span.isEmpty() || span.last >= textLength) continue
-        val w = line.words[i]
+        val w = words[i]
         val a = layout.getBoundingBox(span.first)
         val b = layout.getBoundingBox(span.last)
         val rect = if (b.right > a.left) {
@@ -552,6 +561,17 @@ private fun LyricsList(
                 }
             }
         }
+
+        // Rows above may have grown or shrunk meanwhile (a background vocal, the dots):
+        // settle the new line exactly on its place.
+        val now = listState.layoutInfo
+        val itemNow = now.visibleItemsInfo.firstOrNull { it.index == target }
+        if (itemNow != null) {
+            val rest = itemNow.offset - now.viewportSize.height * 0.2f
+            if (abs(rest) > 3f && abs(rest) < now.viewportSize.height * 0.3f) {
+                listState.animateScrollBy(rest, tween(300, easing = FastOutSlowInEasing))
+            }
+        }
     }
 
     LazyColumn(
@@ -607,6 +627,66 @@ private fun LyricsList(
     }
 }
 
+private val BgFontSize = 20.sp
+
+/** Word timings used to reveal a background vocal: its own, else an even estimate when it has a start and an end. */
+private fun previewBgWords(bg: BgVocal): List<WordTiming> = when {
+    bg.words.isNotEmpty() && bg.words.all { it.startMs >= 0 } -> bg.words
+    bg.startMs >= 0 && bg.endMs > bg.startMs -> distributeWords(bg.text, bg.startMs, bg.endMs)
+    else -> emptyList()
+}
+
+/**
+ * Lyric text in the Apple Music style. With word timing every word is revealed by a soft
+ * left-to-right wipe; with line timing only, the text fades up to white as a whole.
+ * [activeState] (0..1) says how much this text is "on", [peak] is its brightest white.
+ */
+@Composable
+private fun SyncedText(
+    text: String,
+    words: List<WordTiming>,
+    fontSize: TextUnit,
+    lineHeight: TextUnit,
+    letterSpacing: TextUnit,
+    fontWeight: FontWeight,
+    right: Boolean,
+    dim: Color,
+    peak: Float,
+    activeState: State<Float>,
+    posState: State<Long>,
+    modifier: Modifier = Modifier
+) {
+    val wordSynced = words.isNotEmpty() && words.all { it.startMs >= 0 }
+    val shownText = if (wordSynced) words.joinToString(" ") { it.text } else text
+    val spans = remember(words) { if (wordSynced) wordSpans(words) else emptyList<IntRange>() }
+    var layout by remember(shownText) { mutableStateOf<TextLayoutResult?>(null) }
+
+    val wipe = if (wordSynced) {
+        Modifier.drawWithContent {
+            drawContent()
+            val strength = activeState.value * peak
+            val tl = layout
+            if (strength > 0.001f && tl != null) {
+                drawWordWipe(tl, words, spans, posState.value, strength, 0.5f * fontSize.toPx())
+            }
+        }
+    } else {
+        Modifier
+    }
+
+    Text(
+        shownText,
+        color = if (wordSynced) dim else lerp(dim, Color.White.copy(alpha = peak), activeState.value),
+        fontSize = fontSize,
+        lineHeight = lineHeight,
+        fontWeight = fontWeight,
+        letterSpacing = letterSpacing,
+        textAlign = if (right) TextAlign.End else TextAlign.Start,
+        onTextLayout = { layout = it },
+        modifier = modifier.then(wipe)
+    )
+}
+
 @Composable
 private fun LyricItem(
     line: LyricLine,
@@ -623,40 +703,21 @@ private fun LyricItem(
     val blurTarget = if (focused) 0f else (distance * 1.5f).coerceIn(2f, 6f)
     val blurDp by animateDpAsState(blurTarget.dp, tween(450, easing = FastOutSlowInEasing), label = "lyricBlur")
 
-    // Word timing in the file: each word is revealed by a soft left-to-right wipe, like Apple Music.
-    // Only line timing: the whole line fades up to white, which is what Apple Music does for such lyrics.
-    val wordSynced = line.words.isNotEmpty() && line.words.all { it.startMs >= 0 }
-    val shownText = if (wordSynced) line.words.joinToString(" ") { it.text } else line.text
-    val spans = remember(line) { if (wordSynced) wordSpans(line) else emptyList() }
-    var layout by remember(shownText) { mutableStateOf<TextLayoutResult?>(null) }
-
-    val wipe = if (wordSynced) {
-        Modifier.drawWithContent {
-            drawContent()
-            val strength = focusState.value
-            val tl = layout
-            if (strength > 0.001f && tl != null) {
-                drawWordWipe(tl, line, spans, posState.value, strength, 0.5f * LyricFontSize.toPx())
-            }
-        }
-    } else {
-        Modifier
+    // A background vocal stays hidden until its line is sung (and, when it has its own start time,
+    // until that time). Then it opens up under the line; when the line is over it closes again.
+    val bg = line.bg?.takeIf { it.text.isNotBlank() }
+    val bgShown by remember(bg, focused) {
+        derivedStateOf { bg != null && focused && (bg.startMs < 0 || posState.value >= bg.startMs - 150L) }
     }
+    val bgState = animateFloatAsState(if (bgShown) 1f else 0f, tween(350), label = "bgShown")
+    val bgWords = remember(bg) { if (bg == null) emptyList<WordTiming>() else previewBgWords(bg) }
 
     Box(
         Modifier.fillMaxWidth().graphicsLayer { translationY = shift() },
         contentAlignment = if (right) Alignment.CenterEnd else Alignment.CenterStart
     ) {
-        Text(
-            shownText,
-            color = if (wordSynced) Dim else lerp(Dim, Color.White, focusState.value),
-            fontSize = LyricFontSize,
-            lineHeight = 38.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = (-0.5).sp,
-            textAlign = if (right) TextAlign.End else TextAlign.Start,
-            onTextLayout = { layout = it },
-            modifier = Modifier
+        Column(
+            Modifier
                 .fillMaxWidth(0.86f)
                 .graphicsLayer {
                     val sc = 0.94f + 0.06f * focusState.value
@@ -666,9 +727,46 @@ private fun LyricItem(
                 }
                 .blur(blurDp, BlurredEdgeTreatment.Unbounded)
                 .clickable(onClick = onClick)
-                .padding(horizontal = 24.dp, vertical = 12.dp)
-                .then(wipe)
-        )
+                .padding(horizontal = 24.dp, vertical = 12.dp),
+            horizontalAlignment = if (right) Alignment.End else Alignment.Start
+        ) {
+            SyncedText(
+                text = line.text,
+                words = line.words,
+                fontSize = LyricFontSize,
+                lineHeight = 38.sp,
+                letterSpacing = (-0.5).sp,
+                fontWeight = FontWeight.Bold,
+                right = right,
+                dim = Dim,
+                peak = 1f,
+                activeState = focusState,
+                posState = posState,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (bg != null) {
+                AnimatedVisibility(
+                    visible = bgShown,
+                    enter = fadeIn(tween(350)) + expandVertically(tween(350)),
+                    exit = fadeOut(tween(250)) + shrinkVertically(tween(300))
+                ) {
+                    SyncedText(
+                        text = bg.text,
+                        words = bgWords,
+                        fontSize = BgFontSize,
+                        lineHeight = 26.sp,
+                        letterSpacing = (-0.2).sp,
+                        fontWeight = FontWeight.SemiBold,
+                        right = right,
+                        dim = Color.White.copy(alpha = 0.3f),
+                        peak = 0.8f,
+                        activeState = bgState,
+                        posState = posState,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -68,12 +68,14 @@ private sealed interface StudioDialog {
     data class Split(val index: Int) : StudioDialog
     data class Adjust(val index: Int) : StudioDialog
     data class Insert(val index: Int) : StudioDialog
+    data class Background(val index: Int) : StudioDialog
     data object Offset : StudioDialog
 }
 
 private enum class LineAction(val label: String, val icon: ImageVector) {
     ADJUST("Adjust timestamp", Icons.Rounded.Tune),
     EDIT("Edit text", Icons.Rounded.Edit),
+    BACKGROUND("Background vocal", Icons.Rounded.Mic),
     SPLIT("Split line", Icons.Rounded.ContentCut),
     MERGE("Merge with next", Icons.Rounded.MergeType),
     INSERT("Insert line below", Icons.Rounded.Add),
@@ -278,6 +280,7 @@ fun StudioScreen(vm: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit, 
                         when (a) {
                             LineAction.ADJUST -> dialog = StudioDialog.Adjust(i)
                             LineAction.EDIT -> dialog = StudioDialog.EditText(i)
+                            LineAction.BACKGROUND -> dialog = StudioDialog.Background(i)
                             LineAction.SPLIT -> dialog = StudioDialog.Split(i)
                             LineAction.MERGE -> vm.mergeWithNext(i)
                             LineAction.INSERT -> dialog = StudioDialog.Insert(i)
@@ -540,13 +543,26 @@ private fun LyricRow(
             )
         }
         Spacer(Modifier.width(10.dp))
-        Text(
-            text,
-            modifier = Modifier.weight(1f),
-            fontSize = 16.sp,
-            lineHeight = 22.sp,
-            textAlign = if (duet && line.singer == 2) TextAlign.End else TextAlign.Start
-        )
+        Column(
+            Modifier.weight(1f),
+            horizontalAlignment = if (duet && line.singer == 2) Alignment.End else Alignment.Start
+        ) {
+            Text(
+                text,
+                fontSize = 16.sp,
+                lineHeight = 22.sp,
+                textAlign = if (duet && line.singer == 2) TextAlign.End else TextAlign.Start
+            )
+            line.bg?.let { b ->
+                Text(
+                    "BG  ·  " + b.text + (if (b.startMs >= 0) "  ·  " + TimeFmt.lrc(b.startMs) else ""),
+                    color = TsColors.TextSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    textAlign = if (duet && line.singer == 2) TextAlign.End else TextAlign.Start
+                )
+            }
+        }
         if (duet) {
             val singerColor = if (line.singer == 2) TsColors.Singer2 else TsColors.Neon
             Box(
@@ -669,6 +685,92 @@ private fun StudioDialogs(
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+        }
+
+        is StudioDialog.Background -> {
+            val l = lines.getOrNull(dialog.index)
+            val b = l?.bg
+            var text by remember(dialog.index) { mutableStateOf(b?.text ?: "") }
+            val canEnd = b != null && (b.startMs >= 0 || (l?.startMs ?: -1L) >= 0)
+            TsDialog(
+                title = "Background vocal",
+                onDismiss = onDismiss,
+                confirmText = if (text.isBlank() && b != null) "Remove" else "Save",
+                confirmEnabled = text.isNotBlank() || b != null,
+                onConfirm = { vm.setBackground(dialog.index, text); onDismiss() }
+            ) {
+                Text(
+                    "A smaller second line that appears under this line while it is sung.",
+                    color = TsColors.TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text("e.g. oh yeah") },
+                    minLines = 1,
+                    maxLines = 3,
+                    colors = tsTextFieldColors(),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (b != null) {
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        if (b.startMs >= 0) {
+                            TimeFmt.precise(b.startMs) + (if (b.endMs > b.startMs) "  →  " + TimeFmt.precise(b.endMs) else "")
+                        } else {
+                            "Appears together with the line"
+                        },
+                        color = TsColors.Neon,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 15.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        TsChip(
+                            text = "Start here",
+                            selected = false,
+                            onClick = { vm.stampBackground(dialog.index, false) },
+                            modifier = Modifier.weight(1f),
+                            compact = true
+                        )
+                        TsChip(
+                            text = "End here",
+                            selected = false,
+                            onClick = { vm.stampBackground(dialog.index, true) },
+                            modifier = Modifier.weight(1f),
+                            compact = true,
+                            enabled = canEnd
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        listOf(-100L, -10L, 10L, 100L).forEach { d ->
+                            TsChip(
+                                text = (if (d > 0) "+" else "") + d,
+                                selected = false,
+                                onClick = { vm.nudgeBackground(dialog.index, d) },
+                                modifier = Modifier.weight(1f),
+                                compact = true,
+                                enabled = b.startMs >= 0
+                            )
+                        }
+                    }
+                    Text(
+                        "Start / End use the playhead. The chips move the whole timing (ms).",
+                        color = TsColors.TextSecondary,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    if (b.startMs >= 0) {
+                        TextButton(onClick = { vm.clearBackgroundTiming(dialog.index) }) {
+                            Text("Appear together with the line", color = TsColors.TextSecondary)
+                        }
+                    }
+                }
             }
         }
 

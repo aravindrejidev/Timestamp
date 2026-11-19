@@ -145,7 +145,7 @@ fun ImportScreen(vm: ImportViewModel, onBack: () -> Unit, onCreated: (Long) -> U
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "$lineCount lines  ·  Start a line with v2: for a second singer",
+                "$lineCount lines  ·  v2: at the start = second singer  ·  (words) at the end = background vocal",
                 color = TsColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall
             )

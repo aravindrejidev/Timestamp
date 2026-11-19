@@ -120,6 +120,7 @@ fun ExportScreen(
     val fileName = FileUtils.safeName(m.artist, m.title, format.ext)
     val canExport = synced > 0
     val hasDuet = lines.any { it.singer == 2 }
+    val hasBg = lines.any { it.bg != null }
 
     Column(
         Modifier
@@ -180,6 +181,22 @@ fun ExportScreen(
                         )
                     )
                 }
+            }
+        }
+
+        if (hasBg) {
+            Panel(Modifier.fillMaxWidth()) {
+                Text("Background vocals", color = TsColors.TextPrimary, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (format == ExportFormat.TTML) {
+                        "Written as ttm:role=\"x-bg\" spans inside their line. Apple Music shows them as a smaller second line."
+                    } else {
+                        "This format has no background vocals, so each one is written as an extra bg: line right after its line. " +
+                            "The preview in this app understands it; other players show it as a normal line."
+                    },
+                    color = TsColors.TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
         }
 

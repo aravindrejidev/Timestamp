@@ -18,6 +18,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.timestamp.app.TimestampApp
 import com.timestamp.app.audio.Waveform
 import com.timestamp.app.audio.WaveformExtractor
+import com.timestamp.app.data.BgVocal
 import com.timestamp.app.data.LyricLine
 import com.timestamp.app.data.LyricsJson
 import com.timestamp.app.data.ProjectEntity
@@ -32,6 +33,7 @@ import com.timestamp.app.format.buildReport
 import com.timestamp.app.format.distributeWords
 import com.timestamp.app.format.effectiveEnd
 import com.timestamp.app.format.splitWords
+import com.timestamp.app.format.stripParens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -539,7 +541,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 b.endMs >= 0 -> b.endMs
                 else -> -1L
             },
-            words = words
+            words = words,
+            bg = a.bg ?: b.bg
         )
         ls.toMutableList().also {
             it[i] = merged
@@ -563,17 +566,69 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearTimestamp(i: Int) = mutate { ls ->
         if (i !in ls.indices) ls
-        else ls.toMutableList().also { it[i] = ls[i].copy(startMs = -1L, endMs = -1L, words = emptyList()) }
+        else ls.toMutableList().also {
+            it[i] = ls[i].copy(startMs = -1L, endMs = -1L, words = emptyList(), bg = ls[i].bg?.untimed())
+        }
     }
 
     fun clearAllTimestamps() {
-        mutate { ls -> ls.map { it.copy(startMs = -1L, endMs = -1L, words = emptyList()) } }
+        mutate { ls -> ls.map { it.copy(startMs = -1L, endMs = -1L, words = emptyList(), bg = it.bg?.untimed()) } }
         _cursor.value = 0
     }
 
     /** Shifts every synced line and word by [deltaMs]. */
     fun offsetAll(deltaMs: Long) = mutate { ls ->
         if (deltaMs == 0L) ls else ls.map { if (it.startMs >= 0) it.shifted(deltaMs) else it }
+    }
+
+    // ---------------------------------------------------------------- background vocals
+
+    /** Adds, changes or (with blank text) removes the background vocal of line [i]. */
+    fun setBackground(i: Int, text: String) {
+        val t = stripParens(text.replace('\n', ' '))
+        mutate { ls ->
+            if (i !in ls.indices) return@mutate ls
+            val l = ls[i]
+            val old = l.bg
+            val updated = when {
+                t.isEmpty() -> null
+                old == null -> BgVocal(t)
+                old.text == t -> old
+                else -> old.copy(text = t, words = emptyList())
+            }
+            if (updated == old) ls else ls.toMutableList().also { it[i] = l.copy(bg = updated) }
+        }
+    }
+
+    /** Sets the start (or the end) of the background vocal of line [i] to the playhead. */
+    fun stampBackground(i: Int, end: Boolean) {
+        val t = player.currentPosition.coerceAtLeast(0L)
+        mutate { ls ->
+            if (i !in ls.indices) return@mutate ls
+            val l = ls[i]
+            val b = l.bg ?: return@mutate ls
+            val nb = if (!end) {
+                b.copy(startMs = t, endMs = if (b.endMs > t) b.endMs else -1L, words = emptyList())
+            } else {
+                val start = if (b.startMs >= 0) b.startMs else l.startMs
+                if (start < 0 || t <= start) return@mutate ls
+                b.copy(startMs = start, endMs = t, words = emptyList())
+            }
+            ls.toMutableList().also { it[i] = l.copy(bg = nb) }
+        }
+    }
+
+    /** Moves the whole timing of the background vocal of line [i]. */
+    fun nudgeBackground(i: Int, deltaMs: Long) = mutate { ls ->
+        val b = ls.getOrNull(i)?.bg
+        if (b == null || b.startMs < 0) ls
+        else ls.toMutableList().also { it[i] = ls[i].copy(bg = b.shifted(deltaMs)) }
+    }
+
+    /** The vocal appears together with its line again. */
+    fun clearBackgroundTiming(i: Int) = mutate { ls ->
+        val b = ls.getOrNull(i)?.bg
+        if (b == null) ls else ls.toMutableList().also { it[i] = ls[i].copy(bg = b.untimed()) }
     }
 
     // ---------------------------------------------------------------- duet (two singers)

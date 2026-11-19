@@ -1,5 +1,6 @@
 package com.timestamp.app.format
 
+import com.timestamp.app.data.BgVocal
 import com.timestamp.app.data.LyricLine
 import com.timestamp.app.data.WordTiming
 import java.util.Locale
@@ -82,11 +83,53 @@ fun wordsFor(lines: List<LyricLine>, index: Int, estimate: Boolean): List<WordTi
     return distributeWords(l.text, l.startMs, effectiveEnd(lines, index))
 }
 
+/** "(oh yeah)" becomes "oh yeah". Background vocals are written inside parentheses in most lyric files. */
+fun stripParens(s: String): String {
+    var t = s.trim()
+    if (t.startsWith("(")) t = t.substring(1)
+    if (t.endsWith(")")) t = t.substring(0, t.length - 1)
+    return t.trim()
+}
+
+/** Same as [stripParens] for a list of timed words: only the first and the last word carry the brackets. */
+fun stripBgWords(words: List<WordTiming>): List<WordTiming> {
+    if (words.isEmpty()) return words
+    val ws = words.toMutableList()
+    ws[0] = ws[0].copy(text = ws[0].text.trimStart().removePrefix("(").trimStart())
+    val last = ws.lastIndex
+    ws[last] = ws[last].copy(text = ws[last].text.trimEnd().removeSuffix(")").trimEnd())
+    return ws.filter { it.text.isNotEmpty() }
+}
+
+/**
+ * When the background vocal of line [index] starts and ends. A vocal without timing follows its
+ * line: it starts with the line and ends with it.
+ */
+fun bgSpan(lines: List<LyricLine>, index: Int): Pair<Long, Long> {
+    val l = lines[index]
+    val b = l.bg ?: return -1L to -1L
+    val s = if (b.startMs >= 0) b.startMs else l.startMs
+    val e = if (b.endMs > s) b.endMs else maxOf(effectiveEnd(lines, index), s + 500L)
+    return s to e
+}
+
+/** Real word timings of the background vocal, otherwise (optionally) an even estimate. */
+fun bgWordsFor(lines: List<LyricLine>, index: Int, estimate: Boolean): List<WordTiming> {
+    val b = lines[index].bg ?: return emptyList()
+    if (b.words.isNotEmpty() && b.words.all { it.startMs >= 0 }) return b.words
+    if (!estimate || lines[index].startMs < 0) return emptyList()
+    val (s, e) = bgSpan(lines, index)
+    return distributeWords(b.text, s, e)
+}
+
 object LyricsParser {
     private val leadingTime = Regex("^\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?\\]")
     private val metaTag = Regex("^\\[[A-Za-z]{2,}:.*\\]\\s*$")
     private val wordTag = Regex("<(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?>")
     private val singerPrefix = Regex("^(?:v([12])\\s*:|\\[v([12])\\])\\s*", RegexOption.IGNORE_CASE)
+    private val bgPrefix = Regex("^(?:bg\\s*:|\\[bg\\])\\s*", RegexOption.IGNORE_CASE)
+    /** "Main words (background words)": brackets at the end of a plain lyric line. */
+    private val trailingBg = Regex("^(.*\\S)\\s*\\(([^()]+)\\)\\s*$")
 
     private fun toMs(min: String, sec: String, frac: String): Long {
         val f = if (frac.isEmpty()) 0L else frac.padEnd(3, '0').take(3).toLong()
@@ -105,6 +148,28 @@ object LyricsParser {
                 times.add(toMs(m.groupValues[1], m.groupValues[2], m.groupValues[3]))
                 line = line.substring(m.value.length)
             }
+            val bgm = bgPrefix.find(line)
+            if (bgm != null) {
+                // "bg: words" belongs to the line before it
+                line = line.substring(bgm.value.length)
+                if (line.isBlank()) continue
+                val prev = out.lastOrNull()
+                if (prev != null && prev.bg == null) {
+                    val (rawText, rawWords) = parseWords(line)
+                    val bw = stripBgWords(rawWords)
+                    val bgText = if (bw.isNotEmpty()) bw.joinToString(" ") { it.text } else stripParens(rawText)
+                    if (bgText.isNotBlank()) {
+                        out[out.lastIndex] = prev.copy(
+                            bg = when {
+                                bw.isNotEmpty() -> BgVocal(bgText, bw.first().startMs, bw.last().endMs, bw)
+                                times.isNotEmpty() -> BgVocal(bgText, times.first())
+                                else -> BgVocal(bgText)
+                            }
+                        )
+                    }
+                    continue
+                }
+            }
             var singer = 1
             val sm = singerPrefix.find(line)
             if (sm != null) {
@@ -112,7 +177,17 @@ object LyricsParser {
                 line = line.substring(sm.value.length)
             }
             if (times.isEmpty()) {
-                out.add(LyricLine(0, line, singer = singer))
+                val tb = trailingBg.find(line)
+                if (tb != null) {
+                    out.add(
+                        LyricLine(
+                            0, tb.groupValues[1].trim(), singer = singer,
+                            bg = BgVocal(tb.groupValues[2].trim())
+                        )
+                    )
+                } else {
+                    out.add(LyricLine(0, line, singer = singer))
+                }
                 continue
             }
             val (text, words) = parseWords(line)
@@ -182,9 +257,15 @@ object LyricsExporter {
     ): String {
         val sb = StringBuilder()
         header(sb, title, artist, durationMs)
-        synced.forEach { l ->
+        synced.forEachIndexed { i, l ->
             sb.append('[').append(TimeFmt.lrc(l.startMs)).append(']')
                 .append(singerTag(l, singerTags)).append(l.text.trim()).append('\n')
+            val b = l.bg
+            if (b != null && b.text.isNotBlank()) {
+                // LRC has no background vocals: they follow their line as "bg:" lines
+                sb.append('[').append(TimeFmt.lrc(bgSpan(synced, i).first)).append("]bg: ")
+                    .append(b.text.trim()).append('\n')
+            }
         }
         return sb.toString()
     }
@@ -206,6 +287,23 @@ object LyricsExporter {
                 sb.append(" <").append(TimeFmt.lrc(words.last().endMs)).append('>')
             }
             sb.append('\n')
+            val b = l.bg
+            if (b != null && b.text.isNotBlank()) {
+                val (bs, be) = bgSpan(synced, i)
+                val bw = bgWordsFor(synced, i, estimate)
+                sb.append('[').append(TimeFmt.lrc(bs)).append("]bg: ")
+                when {
+                    bw.isNotEmpty() -> {
+                        sb.append(bw.joinToString(" ") { "<${TimeFmt.lrc(it.startMs)}>${it.text}" })
+                        sb.append(" <").append(TimeFmt.lrc(bw.last().endMs)).append('>')
+                    }
+                    b.startMs >= 0 && b.endMs > b.startMs ->
+                        sb.append('<').append(TimeFmt.lrc(bs)).append('>').append(b.text.trim())
+                            .append(" <").append(TimeFmt.lrc(be)).append('>')
+                    else -> sb.append(b.text.trim())
+                }
+                sb.append('\n')
+            }
         }
         return sb.toString()
     }
@@ -253,9 +351,13 @@ object LyricsExporter {
         synced.forEachIndexed { i, l ->
             val end = effectiveEnd(synced, i)
             val words = wordsFor(synced, i, estimate)
+            val bg = l.bg?.takeIf { it.text.isNotBlank() }
+            val (bgStart, bgEnd) = if (bg != null) bgSpan(synced, i) else Pair(-1L, -1L)
+            val pBegin = if (bg != null) minOf(l.startMs, bgStart) else l.startMs
+            val pEnd = if (bg != null) maxOf(end, bgEnd) else end
             val styleId = if (duet && l.singer == 2) "s2" else "s1"
-            sb.append("      <p begin=\"").append(TimeFmt.ttml(l.startMs))
-                .append("\" end=\"").append(TimeFmt.ttml(end))
+            sb.append("      <p begin=\"").append(TimeFmt.ttml(pBegin))
+                .append("\" end=\"").append(TimeFmt.ttml(pEnd))
                 .append("\" region=\"r1\" style=\"").append(styleId).append('"')
             if (duet) sb.append(" ttm:agent=\"v").append(l.singer.coerceIn(1, 2)).append('"')
             sb.append('>')
@@ -265,6 +367,20 @@ object LyricsExporter {
                 sb.append(words.joinToString(" ") {
                     "<span begin=\"${TimeFmt.ttml(it.startMs)}\" end=\"${TimeFmt.ttml(it.endMs)}\">${esc(it.text)}</span>"
                 })
+            }
+            if (bg != null) {
+                // Background vocal: a wrapper span with ttm:role="x-bg" inside the line, timed spans inside it.
+                val bw = bgWordsFor(synced, i, estimate)
+                val inner = if (bw.isNotEmpty()) {
+                    bw.mapIndexed { k, w ->
+                        val t = (if (k == 0) "(" else "") + w.text + (if (k == bw.lastIndex) ")" else "")
+                        "<span begin=\"${TimeFmt.ttml(w.startMs)}\" end=\"${TimeFmt.ttml(w.endMs)}\">${esc(t)}</span>"
+                    }.joinToString(" ")
+                } else {
+                    "<span begin=\"${TimeFmt.ttml(bgStart)}\" end=\"${TimeFmt.ttml(bgEnd)}\">${esc("(" + bg.text.trim() + ")")}</span>"
+                }
+                if (words.isNotEmpty()) sb.append(' ')
+                sb.append("<span ttm:role=\"x-bg\">").append(inner).append("</span>")
             }
             sb.append("</p>\n")
         }
@@ -318,6 +434,61 @@ object TtmlParser {
     }
 
     private val agentTag = Regex("<ttm:agent\\b[^>]*>", RegexOption.IGNORE_CASE)
+    private val bgOpen = Regex("<span\\b[^>]*\\brole\\s*=\\s*\"x-bg\"[^>]*>", RegexOption.IGNORE_CASE)
+    private val spanEdge = Regex("<span\\b|</span\\s*>", RegexOption.IGNORE_CASE)
+
+    /** Cuts every x-bg span out of [inner]: returns what is left and the cut pieces (opening tag, content). */
+    private fun cutBg(inner: String): Pair<String, List<Pair<String, String>>> {
+        var rest = inner
+        val parts = ArrayList<Pair<String, String>>()
+        while (true) {
+            val tag = bgOpen.find(rest) ?: break
+            var depth = 1
+            var contentEnd = -1
+            var closeEnd = -1
+            for (t in spanEdge.findAll(rest, tag.range.last + 1)) {
+                if (t.value.startsWith("</")) depth-- else depth++
+                if (depth == 0) {
+                    contentEnd = t.range.first
+                    closeEnd = t.range.last + 1
+                    break
+                }
+            }
+            if (contentEnd < 0) break
+            parts.add(tag.value to rest.substring(tag.range.last + 1, contentEnd))
+            rest = rest.removeRange(tag.range.first, closeEnd)
+        }
+        return rest to parts
+    }
+
+    private fun parseBg(parts: List<Pair<String, String>>): BgVocal? {
+        val words = ArrayList<WordTiming>()
+        var plain = ""
+        var wrapStart = -1L
+        var wrapEnd = -1L
+        for ((tag, content) in parts) {
+            val before = words.size
+            for (sm in spanTag.findAll(content)) {
+                val ws = time(attr(sm.groupValues[1], "begin"))
+                val we = time(attr(sm.groupValues[1], "end"))
+                val txt = unescape(anyTag.replace(sm.groupValues[2], "")).trim()
+                if (ws != null && txt.isNotEmpty()) words.add(WordTiming(txt, ws, we ?: (ws + 300L)))
+            }
+            if (words.size == before) {
+                // no timed spans inside: the wrapper itself may carry the timing
+                val txt = unescape(anyTag.replace(content, "")).trim()
+                if (txt.isNotEmpty()) {
+                    plain = if (plain.isEmpty()) txt else "$plain $txt"
+                    wrapStart = time(attr(tag, "begin")) ?: -1L
+                    wrapEnd = time(attr(tag, "end")) ?: -1L
+                }
+            }
+        }
+        val bw = stripBgWords(words)
+        if (bw.isNotEmpty()) return BgVocal(bw.joinToString(" ") { it.text }, bw.first().startMs, bw.last().endMs, bw)
+        val t = stripParens(plain)
+        return if (t.isBlank()) null else BgVocal(t, wrapStart, wrapEnd)
+    }
 
     fun parse(xml: String): List<LyricLine> {
         val out = ArrayList<LyricLine>()
@@ -327,7 +498,9 @@ object TtmlParser {
             val inner = m.groupValues[2]
             val start = time(attr(attrs, "begin")) ?: continue
             val end = time(attr(attrs, "end")) ?: -1L
-            val words = spanTag.findAll(inner).mapNotNull { sm ->
+            val (mainInner, bgParts) = cutBg(inner)
+            val bg = parseBg(bgParts)
+            val words = spanTag.findAll(mainInner).mapNotNull { sm ->
                 val ws = time(attr(sm.groupValues[1], "begin"))
                 val we = time(attr(sm.groupValues[1], "end"))
                 val txt = unescape(anyTag.replace(sm.groupValues[2], "")).trim()
@@ -336,16 +509,20 @@ object TtmlParser {
             val text = if (words.isNotEmpty()) {
                 words.joinToString(" ") { it.text }
             } else {
-                unescape(anyTag.replace(inner, "")).trim()
+                unescape(anyTag.replace(mainInner, "")).trim()
             }
-            if (text.isBlank()) continue
             val agent = attr(attrs, "ttm:agent")
             val singer = when {
                 agent == null -> 1
                 agents.indexOf(agent) >= 0 -> minOf(agents.indexOf(agent) + 1, 2)
                 else -> if (Regex("(\\d+)$").find(agent)?.value?.toIntOrNull() == 2) 2 else 1
             }
-            out.add(LyricLine(0, text, start, end, words, singer))
+            if (text.isBlank()) {
+                // a line that only holds a background vocal: show it as an ordinary line
+                if (bg != null) out.add(LyricLine(0, bg.text, start, end, bg.words, singer))
+                continue
+            }
+            out.add(LyricLine(0, text, start, end, words, singer, bg))
         }
         return out.mapIndexed { i, l -> l.copy(id = i.toLong()) }
     }
